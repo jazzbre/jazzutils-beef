@@ -14,7 +14,7 @@ namespace example
 				.(0x00, 0xFF, 0x00),/* 2 -> green */
 				.(0x00, 0x00, 0xFF)/* 3 -> blue */
 				);
-			var gifEncoder = scope GifEncoder("test.gif", w, h, palette, 2, 0);
+			var gifEncoder = scope GifEncoder("test.gif", w, h, 2, 0);
 			if (gifEncoder.Frame == null)
 			{
 				return false;
@@ -27,6 +27,11 @@ namespace example
 					gifEncoder.Frame[j] = (uint8)((i * 3 + j) / 6 % 4);
 				}
 				gifEncoder.AddFrame(10);
+			}
+			// Fill palette
+			for (int i = 0; i < palette.Count; ++i)
+			{
+				gifEncoder.Palette[i] = palette[i];
 			}
 			return true;
 		}

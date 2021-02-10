@@ -1,4 +1,5 @@
 using System;
+using System.IO;
 
 namespace jazzutils
 {
@@ -18,12 +19,17 @@ namespace jazzutils
 	class GifEncoder
 	{
 		private ge_GIF* handle;
+		private GifRgb[] palette = null ~ delete _;
+		private StringView fileName;
 
 		public uint8* Frame => handle != null ? handle.frame : null;
+		public GifRgb[] Palette => palette;
 
-		public this(StringView fileName, int width, int height, Span<GifRgb> palette, int depth, int loop)
+		public this(StringView _fileName, int width, int height, int paletteDepth, int loop)
 		{
-			handle = ge_new_gif(fileName.Ptr, (.)width, (.)height, &palette[0].r, depth, loop);
+			fileName = _fileName;
+			palette = new GifRgb[1 << paletteDepth];
+			handle = ge_new_gif(fileName.Ptr, (.)width, (.)height, (.)palette.CArray(), paletteDepth, loop);
 		}
 
 		public ~this()
@@ -32,6 +38,15 @@ namespace jazzutils
 			{
 				ge_close_gif(handle);
 				handle = null;
+				// Replace palette
+				var stream = scope FileStream();
+				switch (stream.Open(fileName, .ReadWrite)) {
+				case .Ok(let val):
+					stream.Position = 13;
+					stream.TryWrite(Span<uint8>((.)palette.CArray(), palette.Count * 3));
+					break;
+				default:
+				}
 			}
 		}
 
