@@ -1,0 +1,6 @@
+FileVersion = 1
+Dependencies = {corlib = "*", jazzutils-beef = "*"}
+
+[Project]
+Name = "example"
+StartupObject = "example.Program"

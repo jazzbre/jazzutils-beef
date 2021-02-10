@@ -1,0 +1,6 @@
+[submodule "submodules/gifenc"]
+	path = submodules/gifenc
+	url = https://github.com/lecram/gifenc.git
+[submodule "submodules/bx"]
+	path = submodules/bx
+	url = https://github.com/bkaradzic/bx.git

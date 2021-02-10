@@ -1,0 +1,41 @@
+FileVersion = 1
+Dependencies = {corlib = "*"}
+
+[Project]
+Name = "jazzutils-beef"
+
+[Configs.Debug.Win64]
+LibPaths = ["$(ProjectDir)\\.build\\win64_vs2019\\bin\\jazzutilsDebug.lib"]
+
+[Configs.Release.Win64]
+LibPaths = ["$(ProjectDir)\\.build\\win64_vs2019\\bin\\jazzutilsRelease.lib"]
+
+[Configs.Paranoid.Win64]
+LibPaths = ["$(ProjectDir)\\.build\\win64_vs2019\\bin\\jazzutilsRelease.lib"]
+
+[Configs.Test.Win64]
+LibPaths = ["$(ProjectDir)\\.build\\win64_vs2019\\bin\\jazzutilsRelease.lib"]
+
+[Configs.Debug.macOS]
+LibPaths = ["$(ProjectDir)\\.build\\osx-x64\\bin\\libjazzutilsDebug.a"]
+
+[Configs.Release.macOS]
+LibPaths = ["$(ProjectDir)\\.build\\osx-x64\\bin\\libjazzutilsRelease.a"]
+
+[Configs.Paranoid.macOS]
+LibPaths = ["$(ProjectDir)\\.build\\osx-x64\\bin\\libjazzutilsRelease.a"]
+
+[Configs.Test.macOS]
+LibPaths = ["$(ProjectDir)\\.build\\osx-x64\\bin\\libjazzutilsRelease.a"]
+
+[Configs.Debug.Linux64]
+LibPaths = ["$(ProjectDir)\\.build\\linux64_gcc\\bin\\libjazzutilsDebug.a"]
+
+[Configs.Release.Linux64]
+LibPaths = ["$(ProjectDir)\\.build\\linux64_gcc\\bin\\libjazzutilsRelease.a"]
+
+[Configs.Paranoid.Linux64]
+LibPaths = ["$(ProjectDir)\\.build\\linux64_gcc\\bin\\libjazzutilsRelease.a"]
+
+[Configs.Test.Linux64]
+LibPaths = ["$(ProjectDir)\\.build\\linux64_gcc\\bin\\libjazzutilsRelease.a"]
