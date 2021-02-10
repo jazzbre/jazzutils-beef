@@ -14,6 +14,11 @@ namespace jazzutils
 		}
 
 		public uint8 r, g, b;
+
+		public uint32 ToColor(uint8 alpha = 255)
+		{
+			return (uint32)r | (uint32)g << 8 | (uint32)b << 16 | (uint32)alpha << 24;
+		}
 	}
 
 	class GifEncoder
