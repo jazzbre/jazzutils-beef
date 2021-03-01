@@ -16,14 +16,6 @@ namespace jazzutils
 
 		var zipArchive = mz_zip_archive();
 
-		public mz_alloc_func allocFunction;
-		public mz_free_func freeFunction;
-		public mz_realloc_func reallocFunction;
-
-		public mz_file_read_func readFunction;
-		public mz_file_write_func writeFunction;
-		public mz_file_needs_keepalive keepAliveFunction;
-
 		/* Note: These enums can be reduced as needed to save memory or stack space - they are pretty conservative. */
 		public const int MZ_ZIP_MAX_IO_BUF_SIZE = 64 * 1024;
 		public const int MZ_ZIP_MAX_ARCHIVE_FILENAME_SIZE = 512;
@@ -210,6 +202,11 @@ namespace jazzutils
 			return mz_zip_reader_extract_to_mem_no_alloc(&zipArchive, (uint32)index, data, dataSize, 0, buffer, bufferSize) != 0;
 		}
 
+		public bool ReadFile(int index, mz_file_write_func writeFunction, void* userData)
+		{
+			return mz_zip_reader_extract_to_callback(&zipArchive, (uint32)index, writeFunction, userData, 0) != 0;
+		}
+
 		[CRepr]
 		struct mz_zip_archive_file_stat
 		{
@@ -301,5 +298,6 @@ namespace jazzutils
 		[CLink] private static extern mz_bool mz_zip_reader_file_stat(mz_zip_archive* pZip, mz_uint file_index, mz_zip_archive_file_stat* pStat);
 		[CLink] private static extern mz_bool mz_zip_reader_extract_to_mem_no_alloc(mz_zip_archive* pZip, mz_uint file_index, void* pBuf, uint buf_size, mz_uint flags, void* pUser_read_buf, uint user_read_buf_size);
 		[CLink] private static extern mz_bool mz_zip_reader_extract_file_to_mem_no_alloc(mz_zip_archive* pZip, char8* pFilename, void* pBuf, uint buf_size, mz_uint flags, void* pUser_read_buf, uint user_read_buf_size);
+		[CLink] private static extern mz_bool mz_zip_reader_extract_to_callback(mz_zip_archive* pZip, mz_uint file_index, mz_file_write_func pCallback, void* pOpaque, mz_uint flags);
 	}
 }
