@@ -36,10 +36,49 @@ namespace example
 			return true;
 		}
 
+		static bool ZipArchiveTest()
+		{
+			var zipArchive = scope ZipArchive();
+			if (!zipArchive.Open("example.zip"))
+			{
+				return false;
+			}
+			var count = zipArchive.FileCount;
+			var fileInfo = scope ZipArchiveFileInfo();
+			for (int i = 0; i < count; ++i)
+			{
+				if (!zipArchive.GetFileInfo(i, fileInfo))
+				{
+					return false;
+				}
+				Console.WriteLine(scope $"File {i}/{count} '{fileInfo.fileName}' Size:{fileInfo.uncompressedSize} Compressed Size:{fileInfo.compressedSize}");
+			}
+			var index = zipArchive.FindFile("example/src/Program.bf");
+			if (!zipArchive.GetFileInfo(index, fileInfo))
+			{
+				return false;
+			}
+			var data = scope uint8[fileInfo.uncompressedSize];
+			var buffer = scope uint8[0xffff];
+			var result = zipArchive.ReadFile(index, data.CArray(), fileInfo.uncompressedSize, buffer.CArray(), (uint)buffer.Count);
+			if (!result)
+			{
+				return false;
+			}
+			System.IO.File.WriteAll("test.out", data);
+			return true;
+		}
+
 		static int Main()
 		{
 			if (!GifEncodingTest())
 			{
+				Console.WriteLine("GifEncodingTest failed!");
+				return 1;
+			}
+			if (!ZipArchiveTest())
+			{
+				Console.WriteLine("ZipArchiveTest failed!");
 				return 1;
 			}
 			return 0;

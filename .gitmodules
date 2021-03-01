@@ -4,3 +4,6 @@
 [submodule "submodules/bx"]
 	path = submodules/bx
 	url = https://github.com/bkaradzic/bx.git
+[submodule "submodules/miniz"]
+	path = submodules/miniz
+	url = https://github.com/richgel999/miniz.git
