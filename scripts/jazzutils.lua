@@ -15,6 +15,8 @@ project "jazzutils"
       path.join(SOURCE_DIR, "gifenc/gifenc.*"),
       path.join(SOURCE_DIR, "miniz/miniz*.c"),
       path.join(SOURCE_DIR, "miniz/miniz*.h"),
+      path.join(SOURCE_DIR, "enkiTS/src/*.cpp"),
+      path.join(SOURCE_DIR, "enkiTS/src/*.h"),
    }
 
    configuration {}  
