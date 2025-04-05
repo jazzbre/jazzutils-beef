@@ -10,3 +10,5 @@
 [submodule "submodules/enkiTS"]
 	path = submodules/enkiTS
 	url = git@github.com:dougbinks/enkiTS.git
+[submodule "submodules\\enkiTS"]
+	url = https://github.com/dougbinks/enkiTS.git
