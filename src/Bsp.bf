@@ -7,7 +7,7 @@ namespace jazzutils
 	{
 		public typealias BSP = void*;
 		public typealias WingMesh = void*;
-		public typealias Bsp_TraverseCallbackRange = function void(float* vertices, int count);
+		public typealias Bsp_TraverseCallbackRange = function void(float* vertices, int count, void* callbackData);
 
 		[CLink] public static extern WingMesh* Bsp_CreateWingMesh(float* verts, int* tris, int n);
 		[CLink] public static extern void Bsp_DestroyWingMesh(WingMesh* m);

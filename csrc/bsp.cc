@@ -7,7 +7,7 @@ namespace {
 		std::unique_ptr<BSPNode> root;
 	};
 
-	using Bsp_TraverseCallback = void(*)(float3* vertices, int count);
+	using Bsp_TraverseCallback = void(*)(float3* vertices, int count, void* callbackData);
 
 	struct treefronttoback
 	{
@@ -124,7 +124,7 @@ EXPORTAPI void Bsp_Union(BSP* bsp, const float3* p, const float4* r, float s, BS
 	bsp->root = BSPUnion(move(b), move(bsp->root));
 }
 
-EXPORTAPI void Bsp_Traverse(BSP* bsp, const float3* camera_position, bool backToFront, Bsp_TraverseCallback callback)
+EXPORTAPI void Bsp_Traverse(BSP* bsp, const float3* camera_position, bool backToFront, Bsp_TraverseCallback callback, void* callbackData)
 {
 	if (backToFront)
 	{
@@ -132,7 +132,7 @@ EXPORTAPI void Bsp_Traverse(BSP* bsp, const float3* camera_position, bool backTo
 		{
 			for (auto& f : n->brep)
 			{
-				callback(f.vertex.data(), f.vertex.size());
+				callback(f.vertex.data(), f.vertex.size(), callbackData);
 			}
 		}
 	}
@@ -141,7 +141,7 @@ EXPORTAPI void Bsp_Traverse(BSP* bsp, const float3* camera_position, bool backTo
 		{
 			for (auto& f : n->brep)
 			{
-				callback(f.vertex.data(), f.vertex.size());
+				callback(f.vertex.data(), f.vertex.size(), callbackData);
 			}
 		}
 	}
