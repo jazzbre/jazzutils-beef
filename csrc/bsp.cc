@@ -9,6 +9,24 @@ namespace {
 
 	using Bsp_TraverseCallback = void(*)(float3* vertices, int count);
 
+	struct treefronttoback
+	{
+		BSPNode* root;
+		float3 p;
+		treefronttoback(BSPNode* root, const float3& p) :root(root), p(p) {}
+		struct iterator
+		{
+			std::vector<BSPNode*> stack;
+			float3 p;
+			void toleaf(BSPNode* n) { while (n) { stack.push_back(n); n = (dot(float4(p, 1), n->plane()) < 0) ? n->under.get() : n->over.get(); } }
+			BSPNode* operator *() const { return stack.size() ? stack.back() : NULL; }
+			iterator& operator++() { assert(stack.size()); BSPNode* n = **this; stack.pop_back(); assert(n); toleaf((dot(float4(p, 1), n->plane()) < 0) ? n->over.get() : n->under.get());  return *this; }
+			bool operator !=(const iterator& b) { return stack != b.stack; }
+		};
+		iterator begin() { iterator b; b.p = p;  b.toleaf(root); return b; }
+		iterator end() { iterator e; e.p = p;  return e; }
+	};
+
 	std::vector<Face> WingMeshToFaces(const WingMesh& m)
 	{
 		std::vector<Face> faces;
@@ -119,7 +137,7 @@ EXPORTAPI void Bsp_Traverse(BSP* bsp, const float3* camera_position, bool backTo
 		}
 	}
 	else {
-		for (auto n : treetraverse(bsp->root.get()))
+		for (auto n : treefronttoback(bsp->root.get(), *camera_position))
 		{
 			for (auto& f : n->brep)
 			{
