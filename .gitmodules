@@ -12,3 +12,6 @@
 	url = git@github.com:dougbinks/enkiTS.git
 [submodule "submodules\\enkiTS"]
 	url = https://github.com/dougbinks/enkiTS.git
+[submodule "submodules/sandbox"]
+	path = submodules/sandbox
+	url = https://github.com/melax/sandbox.git
