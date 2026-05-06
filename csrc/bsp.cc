@@ -87,8 +87,33 @@ EXPORTAPI WingMesh* Bsp_CreateWingMesh(const float3* verts, const int3* tris, in
 	return pm;
 }
 
+EXPORTAPI WingMesh* Bsp_CreateWingMeshBox(float3* minBounds, float3* maxBounds) {
+	float3& bmin = *minBounds;
+	float3& bmax = *maxBounds;
+	WingMesh* pm = new WingMesh();
+	WingMesh& wm = *pm;
+	wm.verts = { { bmin.x, bmin.y, bmin.z },{ bmin.x, bmin.y, bmax.z },{ bmin.x, bmax.y, bmin.z },{ bmin.x, bmax.y, bmax.z },
+				 { bmax.x, bmin.y, bmin.z },{ bmax.x, bmin.y, bmax.z },{ bmax.x, bmax.y, bmin.z },{ bmax.x, bmax.y, bmax.z }, };
+	wm.faces = { {-1,0,0,  bmin.x},{ 1,0,0, -bmax.x},{0,-1,0,  bmin.y},{0, 1,0, -bmax.y},{0,0,-1,  bmin.z},{0,0, 1, -bmax.z}, };
+	wm.edges =
+	{
+		{ 0,0,11, 1, 3,0},{ 1,1,23, 2, 0,0},{ 2,3,15, 3, 1,0},{ 3,2,16, 0, 2,0},
+		{ 4,6,13, 5, 7,1},{ 5,7,21, 6, 4,1},{ 6,5, 9, 7, 5,1},{ 7,4,18, 4, 6,1},
+		{ 8,0,19, 9,11,2},{ 9,4, 6,10, 8,2},{10,5,20,11, 9,2},{11,1, 0, 8,10,2},
+		{12,3,22,13,15,3},{13,7, 4,14,12,3},{14,6,17,15,13,3},{15,2, 2,12,14,3},
+		{16,0, 3,17,19,4},{17,2,14,18,16,4},{18,6, 7,19,17,4},{19,4, 8,16,18,4},
+		{20,1,10,21,23,5},{21,5, 5,22,20,5},{22,7,12,23,21,5},{23,3, 1,20,22,5},
+	};
+	wm.InitBackLists();
+	wm.SanityCheck();
+	return pm;
+}
+
 EXPORTAPI void Bsp_DestroyWingMesh(WingMesh* m) {
-	delete m;
+	if (m)
+	{
+		delete m;
+	}
 }
 
 EXPORTAPI BSP* Bsp_Create(WingMesh* mesh, float3* minBounds, float3* maxBounds)
@@ -108,24 +133,44 @@ EXPORTAPI void Bsp_Destroy(BSP* bsp)
 
 EXPORTAPI void Bsp_Intersect(BSP* bsp, const float3* p, const float4* r, float s, BSP* cutter)
 {
+	if (bsp == nullptr || bsp->root.get() == nullptr)
+	{
+		return;
+	}
+	if (cutter == nullptr || cutter->root.get() == nullptr)
+	{
+		return;
+	}
 	auto b = BSPDup(cutter->root.get());
+	BSPRotate(*b, *r);
 	BSPScale(*b, s);
 	BSPTranslate(*b, *p);
-	BSPRotate(*b, *r);
 	bsp->root = BSPIntersect(move(b), move(bsp->root));
 }
 
 EXPORTAPI void Bsp_Union(BSP* bsp, const float3* p, const float4* r, float s, BSP* cutter)
 {
+	if (bsp == nullptr || bsp->root.get() == nullptr)
+	{
+		return;
+	}
+	if (cutter == nullptr || cutter->root.get() == nullptr)
+	{
+		return;
+	}
 	auto b = BSPDup(cutter->root.get());
+	BSPRotate(*b, *r);
 	BSPScale(*b, s);
 	BSPTranslate(*b, *p);
-	BSPRotate(*b, *r);
 	bsp->root = BSPUnion(move(b), move(bsp->root));
 }
 
 EXPORTAPI void Bsp_Traverse(BSP* bsp, const float3* camera_position, bool backToFront, Bsp_TraverseCallback callback, void* callbackData)
 {
+	if (bsp == nullptr || bsp->root.get() == nullptr)
+	{
+		return;
+	}
 	if (backToFront)
 	{
 		for (auto n : treebacktofront(bsp->root.get(), *camera_position))
@@ -145,4 +190,36 @@ EXPORTAPI void Bsp_Traverse(BSP* bsp, const float3* camera_position, bool backTo
 			}
 		}
 	}
+}
+
+extern float3   HitCheckImpactNormal;;
+
+EXPORTAPI bool Bsp_SphereTest(BSP* bsp, float r, bool solid, float3* v0, float3* v1, float3* impact, float3* impactNormal)
+{
+	if (bsp == nullptr || bsp->root.get() == nullptr)
+	{
+		return false;
+	}
+	int ret = HitCheckSphere(r, bsp->root.get(), solid, *v0, *v1, impact, {});
+	if (ret != 0)
+	{
+		*impactNormal = HitCheckImpactNormal;
+		return true;
+	}
+	return false;
+}
+
+EXPORTAPI bool Bsp_RayTest(BSP* bsp, bool solid, float3* v0, float3* v1, float3* impact, float3* impactNormal)
+{
+	if (bsp == nullptr || bsp->root.get() == nullptr)
+	{
+		return false;
+	}
+	int ret = HitCheck(bsp->root.get(), solid, *v0, *v1, impact);
+	if (ret != 0)
+	{
+		*impactNormal = HitCheckImpactNormal;
+		return true;
+	}
+	return false;
 }
