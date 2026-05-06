@@ -313,6 +313,53 @@ static bool SetVoxelMaterialInternal(
 	return true;
 }
 
+static bool ClearVoxelToAirInternal(
+	VW_World* w,
+	int x,
+	int y,
+	int z)
+{
+	if (!InBounds(w, x, y, z))
+		return false;
+
+	const int voxelIndex = VoxelIndex(w, x, y, z);
+	const uint8_t oldMaterial = w->voxels[(size_t)voxelIndex];
+
+	// Already air.
+	if (oldMaterial == 0)
+		return false;
+
+	const int cs = w->chunkSize;
+
+	const int chunkX = x / cs;
+	const int chunkY = y / cs;
+	const int chunkZ = z / cs;
+
+	VW_Chunk* chunk = GetChunk(w, chunkX, chunkY, chunkZ);
+
+	if (!chunk)
+		return false;
+
+	const int lx = x - chunkX * cs;
+	const int ly = y - chunkY * cs;
+	const int lz = z - chunkZ * cs;
+
+	const uint64_t bitX = 1ull << lx;
+	const uint64_t bitY = 1ull << ly;
+	const uint64_t bitZ = 1ull << lz;
+
+	chunk->occupancyX[(size_t)(lz * cs + ly)] &= ~bitX;
+	chunk->occupancyY[(size_t)(lz * cs + lx)] &= ~bitY;
+	chunk->occupancyZ[(size_t)(ly * cs + lx)] &= ~bitZ;
+
+	w->voxels[(size_t)voxelIndex] = 0;
+
+	chunk->solidVoxelCount--;
+	chunk->version++;
+
+	return true;
+}
+
 static void ClearAllOccupancy(VW_World* w)
 {
 	if (!w)
@@ -462,6 +509,146 @@ static uint64_t BuildOccupancyRowFallback(
 	return bits;
 }
 
+static uint64_t BuildOccupancyRowFromChunkCacheGlobal(
+	const VW_World* w,
+	int axis,
+	int axisCoord,
+	int uAxis,
+	int vAxis,
+	int uMin,
+	int vCoord,
+	int width)
+{
+	if (!w || width <= 0 || width > 64)
+		return 0ull;
+
+	// If the fixed coordinates are outside the world, the row is air.
+	int startP[3] = { 0, 0, 0 };
+	int endP[3] = { 0, 0, 0 };
+
+	startP[axis] = axisCoord;
+	startP[uAxis] = uMin;
+	startP[vAxis] = vCoord;
+
+	endP[axis] = axisCoord;
+	endP[uAxis] = uMin + width - 1;
+	endP[vAxis] = vCoord;
+
+	if (!InBounds(w, startP[0], startP[1], startP[2]) ||
+		!InBounds(w, endP[0], endP[1], endP[2]))
+	{
+		return 0ull;
+	}
+
+	const int cs = w->chunkSize;
+
+	const int startChunkX = startP[0] / cs;
+	const int startChunkY = startP[1] / cs;
+	const int startChunkZ = startP[2] / cs;
+
+	const int endChunkX = endP[0] / cs;
+	const int endChunkY = endP[1] / cs;
+	const int endChunkZ = endP[2] / cs;
+
+	// The requested row must live fully inside one chunk.
+	// For the current mesher this should normally be true.
+	if (startChunkX != endChunkX ||
+		startChunkY != endChunkY ||
+		startChunkZ != endChunkZ)
+	{
+		return BuildOccupancyRowFallback(
+			w,
+			axis,
+			axisCoord,
+			uAxis,
+			vAxis,
+			uMin,
+			vCoord,
+			width);
+	}
+
+	const VW_Chunk* chunk = GetChunkConst(
+		w,
+		startChunkX,
+		startChunkY,
+		startChunkZ);
+
+	if (!chunk)
+		return 0ull;
+
+	const int localAxis = axisCoord - startChunkX * cs;
+	const int localU = uMin - (
+		uAxis == 0 ? startChunkX * cs :
+		uAxis == 1 ? startChunkY * cs :
+		startChunkZ * cs);
+
+	const int localV = vCoord - (
+		vAxis == 0 ? startChunkX * cs :
+		vAxis == 1 ? startChunkY * cs :
+		startChunkZ * cs);
+
+	int localP[3] = { 0, 0, 0 };
+
+	localP[axis] = localAxis;
+	localP[uAxis] = localU;
+	localP[vAxis] = localV;
+
+	if (localP[0] < 0 || localP[1] < 0 || localP[2] < 0 ||
+		localP[0] >= cs || localP[1] >= cs || localP[2] >= cs)
+	{
+		return BuildOccupancyRowFallback(
+			w,
+			axis,
+			axisCoord,
+			uAxis,
+			vAxis,
+			uMin,
+			vCoord,
+			width);
+	}
+
+	uint64_t row = 0ull;
+
+	if (uAxis == 0)
+	{
+		// Bits run along X. Fixed coordinates are Y/Z.
+		const int lx = localP[0];
+		const int ly = localP[1];
+		const int lz = localP[2];
+
+		(void)lx;
+
+		row = chunk->occupancyX[(size_t)(lz * cs + ly)];
+		row >>= localU;
+	}
+	else if (uAxis == 1)
+	{
+		// Bits run along Y. Fixed coordinates are X/Z.
+		const int lx = localP[0];
+		const int ly = localP[1];
+		const int lz = localP[2];
+
+		(void)ly;
+
+		row = chunk->occupancyY[(size_t)(lz * cs + lx)];
+		row >>= localU;
+	}
+	else
+	{
+		// Bits run along Z. Fixed coordinates are X/Y.
+		const int lx = localP[0];
+		const int ly = localP[1];
+		const int lz = localP[2];
+
+		(void)lz;
+
+		row = chunk->occupancyZ[(size_t)(ly * cs + lx)];
+		row >>= localU;
+	}
+
+	return row & MakeLowBitsMask(width);
+}
+
 static uint64_t BuildOccupancyRowCached(
 	const VW_World* w,
 	ChunkCoordInternal c,
@@ -475,89 +662,15 @@ static uint64_t BuildOccupancyRowCached(
 	int vCoord,
 	int width)
 {
-	if (!w || width <= 0 || width > 64)
-		return 0ull;
-
-	if (axisCoord < minCoord[axis] || axisCoord >= maxCoord[axis])
-	{
-		return BuildOccupancyRowFallback(
-			w,
-			axis,
-			axisCoord,
-			uAxis,
-			vAxis,
-			uMin,
-			vCoord,
-			width);
-	}
-
-	if (vCoord < minCoord[vAxis] || vCoord >= maxCoord[vAxis])
-	{
-		return BuildOccupancyRowFallback(
-			w,
-			axis,
-			axisCoord,
-			uAxis,
-			vAxis,
-			uMin,
-			vCoord,
-			width);
-	}
-
-	if (uMin < minCoord[uAxis] || (uMin + width) > maxCoord[uAxis])
-	{
-		return BuildOccupancyRowFallback(
-			w,
-			axis,
-			axisCoord,
-			uAxis,
-			vAxis,
-			uMin,
-			vCoord,
-			width);
-	}
-
-	const VW_Chunk* chunk = GetChunkConst(w, c.x, c.y, c.z);
-
-	if (!chunk)
-		return 0ull;
-
-	const int cs = w->chunkSize;
-
-	int fixed[3] = { 0, 0, 0 };
-	fixed[axis] = axisCoord - minCoord[axis];
-	fixed[vAxis] = vCoord - minCoord[vAxis];
-
-	const int localUStart = uMin - minCoord[uAxis];
-
-	uint64_t row = 0ull;
-
-	if (uAxis == 0)
-	{
-		const int ly = fixed[1];
-		const int lz = fixed[2];
-
-		row = chunk->occupancyX[(size_t)(lz * cs + ly)];
-		row >>= localUStart;
-	}
-	else if (uAxis == 1)
-	{
-		const int lx = fixed[0];
-		const int lz = fixed[2];
-
-		row = chunk->occupancyY[(size_t)(lz * cs + lx)];
-		row >>= localUStart;
-	}
-	else
-	{
-		const int lx = fixed[0];
-		const int ly = fixed[1];
-
-		row = chunk->occupancyZ[(size_t)(ly * cs + lx)];
-		row >>= localUStart;
-	}
-
-	return row & MakeLowBitsMask(width);
+	return BuildOccupancyRowFromChunkCacheGlobal(
+		w,
+		axis,
+		axisCoord,
+		uAxis,
+		vAxis,
+		uMin,
+		vCoord,
+		width);
 }
 
 static uint8_t GetFaceMaterial(
@@ -994,6 +1107,169 @@ static bool BuildChunkMeshBitGreedy(
 	return true;
 }
 
+static int DrillSphereAirFast(
+	VW_World* world,
+	float cx,
+	float cy,
+	float cz,
+	float radius)
+{
+	if (!world || radius <= 0.0f)
+		return 0;
+
+	const int minX = std::max(0, (int)std::floor(cx - radius));
+	const int minY = std::max(0, (int)std::floor(cy - radius));
+	const int minZ = std::max(0, (int)std::floor(cz - radius));
+
+	const int maxX = std::min(world->sizeX - 1, (int)std::ceil(cx + radius));
+	const int maxY = std::min(world->sizeY - 1, (int)std::ceil(cy + radius));
+	const int maxZ = std::min(world->sizeZ - 1, (int)std::ceil(cz + radius));
+
+	const float r2 = radius * radius;
+	int changed = 0;
+
+	int changedMinX = world->sizeX;
+	int changedMinY = world->sizeY;
+	int changedMinZ = world->sizeZ;
+
+	int changedMaxX = -1;
+	int changedMaxY = -1;
+	int changedMaxZ = -1;
+
+	for (int z = minZ; z <= maxZ; z++)
+	{
+		const float pz = (float)z + 0.5f;
+		const float dz = pz - cz;
+		const float dz2 = dz * dz;
+
+		for (int y = minY; y <= maxY; y++)
+		{
+			const float py = (float)y + 0.5f;
+			const float dy = py - cy;
+			const float dy2 = dy * dy;
+
+			const float remaining = r2 - dz2 - dy2;
+
+			if (remaining < 0.0f)
+				continue;
+
+			const float xExtent = std::sqrt(remaining);
+
+			const int rowMinX = std::max(minX, (int)std::floor(cx - xExtent));
+			const int rowMaxX = std::min(maxX, (int)std::ceil(cx + xExtent));
+
+			for (int x = rowMinX; x <= rowMaxX; x++)
+			{
+				const float px = (float)x + 0.5f;
+				const float dx = px - cx;
+
+				if (dx * dx > remaining)
+					continue;
+
+				if (ClearVoxelToAirInternal(world, x, y, z))
+				{
+					changed++;
+
+					changedMinX = std::min(changedMinX, x);
+					changedMinY = std::min(changedMinY, y);
+					changedMinZ = std::min(changedMinZ, z);
+
+					changedMaxX = std::max(changedMaxX, x);
+					changedMaxY = std::max(changedMaxY, y);
+					changedMaxZ = std::max(changedMaxZ, z);
+				}
+			}
+		}
+	}
+
+	if (changed > 0)
+	{
+		MarkDirtyVoxelBounds(
+			world,
+			changedMinX,
+			changedMinY,
+			changedMinZ,
+			changedMaxX,
+			changedMaxY,
+			changedMaxZ);
+	}
+
+	return changed;
+}
+
+static int DrillCapsuleAirFast(
+	VW_World* world,
+	VW_Vec3 a,
+	VW_Vec3 b,
+	float radius)
+{
+	if (!world || radius <= 0.0f)
+		return 0;
+
+	const int minX = std::max(0, (int)std::floor(std::min(a.x, b.x) - radius));
+	const int minY = std::max(0, (int)std::floor(std::min(a.y, b.y) - radius));
+	const int minZ = std::max(0, (int)std::floor(std::min(a.z, b.z) - radius));
+
+	const int maxX = std::min(world->sizeX - 1, (int)std::ceil(std::max(a.x, b.x) + radius));
+	const int maxY = std::min(world->sizeY - 1, (int)std::ceil(std::max(a.y, b.y) + radius));
+	const int maxZ = std::min(world->sizeZ - 1, (int)std::ceil(std::max(a.z, b.z) + radius));
+
+	const float r2 = radius * radius;
+	int changed = 0;
+
+	int changedMinX = world->sizeX;
+	int changedMinY = world->sizeY;
+	int changedMinZ = world->sizeZ;
+
+	int changedMaxX = -1;
+	int changedMaxY = -1;
+	int changedMaxZ = -1;
+
+	for (int z = minZ; z <= maxZ; z++)
+	{
+		for (int y = minY; y <= maxY; y++)
+		{
+			for (int x = minX; x <= maxX; x++)
+			{
+				VW_Vec3 p;
+				p.x = (float)x + 0.5f;
+				p.y = (float)y + 0.5f;
+				p.z = (float)z + 0.5f;
+
+				if (PointSegmentDistanceSq(p, a, b) <= r2)
+				{
+					if (ClearVoxelToAirInternal(world, x, y, z))
+					{
+						changed++;
+
+						changedMinX = std::min(changedMinX, x);
+						changedMinY = std::min(changedMinY, y);
+						changedMinZ = std::min(changedMinZ, z);
+
+						changedMaxX = std::max(changedMaxX, x);
+						changedMaxY = std::max(changedMaxY, y);
+						changedMaxZ = std::max(changedMaxZ, z);
+					}
+				}
+			}
+		}
+	}
+
+	if (changed > 0)
+	{
+		MarkDirtyVoxelBounds(
+			world,
+			changedMinX,
+			changedMinY,
+			changedMinZ,
+			changedMaxX,
+			changedMaxY,
+			changedMaxZ);
+	}
+
+	return changed;
+}
+
 extern "C"
 {
 
@@ -1179,6 +1455,9 @@ extern "C"
 		if (!world || radius <= 0.0f)
 			return 0;
 
+		if (replacementMaterial == 0)
+			return DrillSphereAirFast(world, cx, cy, cz, radius);
+
 		const int minX = std::max(0, (int)std::floor(cx - radius));
 		const int minY = std::max(0, (int)std::floor(cy - radius));
 		const int minZ = std::max(0, (int)std::floor(cz - radius));
@@ -1268,6 +1547,9 @@ extern "C"
 	{
 		if (!world || radius <= 0.0f)
 			return 0;
+
+		if (replacementMaterial == 0)
+			return DrillCapsuleAirFast(world, a, b, radius);
 
 		const int minX = std::max(0, (int)std::floor(std::min(a.x, b.x) - radius));
 		const int minY = std::max(0, (int)std::floor(std::min(a.y, b.y) - radius));
