@@ -53,6 +53,7 @@ extern "C" {
 	} VW_Mesh;
 
 	typedef struct VW_World VW_World;
+	typedef struct VW_MeshBuildScratch VW_MeshBuildScratch;
 
 	VW_API VW_World* VW_CreateWorld(
 		int sizeX,
@@ -133,16 +134,18 @@ extern "C" {
 		int dirtyIndex,
 		VW_ChunkCoord* outCoord);
 
-	VW_API int VW_BuildDirtyChunkMesh(
-		VW_World* world,
-		int dirtyIndex,
-		VW_Mesh* outMesh);
-
-	VW_API int VW_BuildChunkMesh(
+	VW_API int VW_BuildChunkMeshWithScratch(
 		VW_World* world,
 		int chunkX,
 		int chunkY,
 		int chunkZ,
+		VW_MeshBuildScratch* scratch,
+		VW_Mesh* outMesh);
+
+	VW_API int VW_BuildDirtyChunkMeshWithScratch(
+		VW_World* world,
+		int dirtyIndex,
+		VW_MeshBuildScratch* scratch,
 		VW_Mesh* outMesh);
 
 	VW_API void VW_FreeMesh(
@@ -150,6 +153,14 @@ extern "C" {
 
 	VW_API void VW_ClearDirtyChunks(
 		VW_World* world);
+
+	VW_API VW_MeshBuildScratch* VW_CreateMeshBuildScratch(void);
+
+	VW_API void VW_DestroyMeshBuildScratch(
+		VW_MeshBuildScratch* scratch);
+
+	VW_API void VW_ClearMeshBuildScratch(
+		VW_MeshBuildScratch* scratch);
 
 #ifdef __cplusplus
 }

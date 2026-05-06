@@ -66,11 +66,10 @@ namespace jazzutils
 			public int32 chunkLinearIndex;
 		}
 
+		public struct VW_MeshBuildScratch;
+
 		public static class VoxelNative
 		{
-			// Change this to "VoxelWrapper" if you link/import without the .dll suffix.
-			public const StringView DllName = "VoxelWrapper.dll";
-
 			[CLink]
 			public static extern void* VW_CreateWorld(
 				int32 sizeX,
@@ -168,26 +167,63 @@ namespace jazzutils
 				VW_ChunkCoord* outCoord);
 
 			[CLink]
-			public static extern int32 VW_BuildDirtyChunkMesh(
-				void* world,
-				int32 dirtyIndex,
-				VW_Mesh* outMesh);
-
-			[CLink]
-			public static extern int32 VW_BuildChunkMesh(
-				void* world,
-				int32 chunkX,
-				int32 chunkY,
-				int32 chunkZ,
-				VW_Mesh* outMesh);
-
-			[CLink]
 			public static extern void VW_FreeMesh(
 				VW_Mesh* mesh);
 
 			[CLink]
 			public static extern void VW_ClearDirtyChunks(
 				void* world);
+
+			[CLink]
+			public static extern VW_MeshBuildScratch* VW_CreateMeshBuildScratch();
+
+			[CLink]
+			public static extern void VW_DestroyMeshBuildScratch(
+				VW_MeshBuildScratch* scratch);
+
+			[CLink]
+			public static extern void VW_ClearMeshBuildScratch(
+				VW_MeshBuildScratch* scratch);
+
+			[CLink]
+			public static extern int32 VW_BuildChunkMeshWithScratch(
+				void* world,
+				int32 chunkX,
+				int32 chunkY,
+				int32 chunkZ,
+				VW_MeshBuildScratch* scratch,
+				VW_Mesh* outMesh);
+
+			[CLink]
+			public static extern int32 VW_BuildDirtyChunkMeshWithScratch(
+				void* world,
+				int32 dirtyIndex,
+				VW_MeshBuildScratch* scratch,
+				VW_Mesh* outMesh);
+		}
+
+		public class VoxelMeshBuildScratch
+		{
+			public VW_MeshBuildScratch* Handle;
+
+			public this()
+			{
+				Handle = VoxelNative.VW_CreateMeshBuildScratch();
+			}
+
+			public ~this()
+			{
+				if (Handle != null)
+				{
+					VoxelNative.VW_DestroyMeshBuildScratch(Handle);
+					Handle = null;
+				}
+			}
+
+			public void Clear()
+			{
+				VoxelNative.VW_ClearMeshBuildScratch(Handle);
+			}
 		}
 
 		public class VoxelWorld
@@ -330,18 +366,18 @@ namespace jazzutils
 				return VoxelNative.VW_GetChunkLinearIndex(mHandle, chunkX, chunkY, chunkZ);
 			}
 
-			public bool BuildDirtyChunkMesh(int32 dirtyIndex, out VW_Mesh mesh)
+			public bool BuildDirtyChunkMeshWithScratch(int32 dirtyIndex, VoxelMeshBuildScratch scratch, out VW_Mesh mesh)
 			{
 				mesh = default;
 
-				return VoxelNative.VW_BuildDirtyChunkMesh(mHandle, dirtyIndex, &mesh) != 0;
+				return VoxelNative.VW_BuildDirtyChunkMeshWithScratch(mHandle, dirtyIndex, scratch.Handle, &mesh) != 0;
 			}
 
-			public bool BuildChunkMesh(int32 chunkX, int32 chunkY, int32 chunkZ, out VW_Mesh mesh)
+			public bool BuildChunkMeshWithScratch(int32 chunkX, int32 chunkY, int32 chunkZ, VoxelMeshBuildScratch scratch, out VW_Mesh mesh)
 			{
 				mesh = default;
 
-				return VoxelNative.VW_BuildChunkMesh(mHandle, chunkX, chunkY, chunkZ, &mesh) != 0;
+				return VoxelNative.VW_BuildChunkMeshWithScratch(mHandle, chunkX, chunkY, chunkZ, scratch.Handle, &mesh) != 0;
 			}
 
 			public void FreeMesh(ref VW_Mesh mesh)
@@ -352,62 +388,6 @@ namespace jazzutils
 			public void ClearDirtyChunks()
 			{
 				VoxelNative.VW_ClearDirtyChunks(mHandle);
-			}
-		}
-
-		public static class VoxelExample
-		{
-			public static void ExampleUsage()
-			{
-				int32 sizeX = 128;
-				int32 sizeY = 128;
-				int32 sizeZ = 128;
-				int32 chunkSize = 32;
-
-				VoxelWorld world = scope VoxelWorld(sizeX, sizeY, sizeZ, chunkSize);
-
-				int32 voxelCount = sizeX * sizeY * sizeZ;
-				uint8[] voxels = scope uint8[voxelCount];
-
-				for (int32 i = 0; i < voxelCount; i++)
-					voxels[i] = 1;
-
-				uint8* voxelPtr = voxels.Ptr;
-				world.SetData(voxelPtr, sizeX, sizeY, sizeZ);
-
-				world.DrillSphere(64.0f, 64.0f, 64.0f, 8.0f, 0);
-
-				int32 dirtyCount = world.DirtyChunkCount;
-
-				for (int32 dirtyIndex = 0; dirtyIndex < dirtyCount; dirtyIndex++)
-				{
-					VW_ChunkCoord coord;
-
-					if (!world.GetDirtyChunkCoord(dirtyIndex, out coord))
-						continue;
-
-					int32 renderChunkIndex = world.GetChunkLinearIndex(coord.x, coord.y, coord.z);
-
-					VW_Mesh mesh;
-
-					if (world.BuildChunkMesh(coord.x, coord.y, coord.z, out mesh))
-					{
-						// Replace this chunk in your renderer:
-						//
-						// renderChunks[renderChunkIndex].Upload(
-						//     mesh.vertices,
-						//     mesh.vertexCount,
-						//     mesh.indices,
-						//     mesh.indexCount);
-						//
-						// If mesh.vertexCount == 0, the chunk became empty.
-						// In that case, delete/clear the render chunk mesh.
-
-						world.FreeMesh(ref mesh);
-					}
-				}
-
-				world.ClearDirtyChunks();
 			}
 		}
 	}

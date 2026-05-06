@@ -31,6 +31,15 @@ struct VW_Chunk
 	uint32_t version = 0;
 };
 
+struct VW_MeshBuildScratch
+{
+	std::vector<VW_Vertex> vertices;
+	std::vector<uint32_t> indices;
+
+	std::vector<uint64_t> positiveRows;
+	std::vector<uint64_t> negativeRows;
+};
+
 struct VW_World
 {
 	int sizeX = 0;
@@ -210,8 +219,6 @@ static void MarkDirtyVoxelBounds(
 	if (minX > maxX || minY > maxY || minZ > maxZ)
 		return;
 
-	// Expand by one voxel so neighboring chunks get remeshed when the edit
-	// touches a chunk boundary. This catches exposed/hidden faces across chunk edges.
 	minX = std::max(0, minX - 1);
 	minY = std::max(0, minY - 1);
 	minZ = std::max(0, minZ - 1);
@@ -843,9 +850,11 @@ static void ConsumeBitGreedyFaceRows(
 static bool BuildChunkMeshBitGreedy(
 	VW_World* w,
 	ChunkCoordInternal c,
-	std::vector<VW_Vertex>& outVertices,
-	std::vector<uint32_t>& outIndices)
+	VW_MeshBuildScratch& scratch)
 {
+	scratch.vertices.clear();
+	scratch.indices.clear();
+
 	if (!w)
 		return false;
 
@@ -882,6 +891,13 @@ static bool BuildChunkMeshBitGreedy(
 		return false;
 	}
 
+	// Reuse capacity across builds on the same thread.
+	if (scratch.vertices.capacity() < 1024)
+		scratch.vertices.reserve(1024);
+
+	if (scratch.indices.capacity() < 1536)
+		scratch.indices.reserve(1536);
+
 	for (int axis = 0; axis < 3; axis++)
 	{
 		const int uAxis = (axis + 1) % 3;
@@ -901,8 +917,11 @@ static bool BuildChunkMeshBitGreedy(
 
 		const uint64_t validMask = MakeLowBitsMask(maskW);
 
-		std::vector<uint64_t> positiveRows((size_t)maskH);
-		std::vector<uint64_t> negativeRows((size_t)maskH);
+		scratch.positiveRows.resize((size_t)maskH);
+		scratch.negativeRows.resize((size_t)maskH);
+
+		std::vector<uint64_t>& positiveRows = scratch.positiveRows;
+		std::vector<uint64_t>& negativeRows = scratch.negativeRows;
 
 		for (int plane = minCoord[axis]; plane <= maxCoord[axis]; plane++)
 		{
@@ -942,8 +961,8 @@ static bool BuildChunkMeshBitGreedy(
 
 			ConsumeBitGreedyFaceRows(
 				w,
-				outVertices,
-				outIndices,
+				scratch.vertices,
+				scratch.indices,
 				positiveRows,
 				axis,
 				+1,
@@ -957,8 +976,8 @@ static bool BuildChunkMeshBitGreedy(
 
 			ConsumeBitGreedyFaceRows(
 				w,
-				outVertices,
-				outIndices,
+				scratch.vertices,
+				scratch.indices,
 				negativeRows,
 				axis,
 				-1,
@@ -1344,14 +1363,15 @@ extern "C"
 		return 1;
 	}
 
-	VW_API int VW_BuildChunkMesh(
+	VW_API int VW_BuildChunkMeshWithScratch(
 		VW_World* world,
 		int chunkX,
 		int chunkY,
 		int chunkZ,
+		VW_MeshBuildScratch* scratch,
 		VW_Mesh* outMesh)
 	{
-		if (!world || !outMesh)
+		if (!world || !scratch || !outMesh)
 			return 0;
 
 		const int chunkIndex = ChunkLinearIndex(world, chunkX, chunkY, chunkZ);
@@ -1361,16 +1381,16 @@ extern "C"
 
 		std::memset(outMesh, 0, sizeof(VW_Mesh));
 
-		std::vector<VW_Vertex> vertices;
-		std::vector<uint32_t> indices;
-
 		ChunkCoordInternal c;
 		c.x = chunkX;
 		c.y = chunkY;
 		c.z = chunkZ;
 
-		if (!BuildChunkMeshBitGreedy(world, c, vertices, indices))
+		if (!BuildChunkMeshBitGreedy(world, c, *scratch))
 			return 0;
+
+		std::vector<VW_Vertex>& vertices = scratch->vertices;
+		std::vector<uint32_t>& indices = scratch->indices;
 
 		outMesh->chunkX = chunkX;
 		outMesh->chunkY = chunkY;
@@ -1412,12 +1432,13 @@ extern "C"
 		return 1;
 	}
 
-	VW_API int VW_BuildDirtyChunkMesh(
+	VW_API int VW_BuildDirtyChunkMeshWithScratch(
 		VW_World* world,
 		int dirtyIndex,
+		VW_MeshBuildScratch* scratch,
 		VW_Mesh* outMesh)
 	{
-		if (!world || !outMesh)
+		if (!world || !scratch || !outMesh)
 			return 0;
 
 		if (dirtyIndex < 0 || dirtyIndex >= (int)world->dirtyChunkIndices.size())
@@ -1426,7 +1447,13 @@ extern "C"
 		const int chunkIndex = world->dirtyChunkIndices[(size_t)dirtyIndex];
 		const ChunkCoordInternal c = ChunkCoordFromLinearIndex(world, chunkIndex);
 
-		return VW_BuildChunkMesh(world, c.x, c.y, c.z, outMesh);
+		return VW_BuildChunkMeshWithScratch(
+			world,
+			c.x,
+			c.y,
+			c.z,
+			scratch,
+			outMesh);
 	}
 
 	VW_API void VW_FreeMesh(
@@ -1463,6 +1490,36 @@ extern "C"
 		}
 
 		world->dirtyChunkIndices.clear();
+	}
+
+	VW_API VW_MeshBuildScratch* VW_CreateMeshBuildScratch(void)
+	{
+		VW_MeshBuildScratch* scratch = new VW_MeshBuildScratch();
+
+		scratch->vertices.reserve(1024);
+		scratch->indices.reserve(1536);
+		scratch->positiveRows.reserve(64);
+		scratch->negativeRows.reserve(64);
+
+		return scratch;
+	}
+
+	VW_API void VW_DestroyMeshBuildScratch(
+		VW_MeshBuildScratch* scratch)
+	{
+		delete scratch;
+	}
+
+	VW_API void VW_ClearMeshBuildScratch(
+		VW_MeshBuildScratch* scratch)
+	{
+		if (!scratch)
+			return;
+
+		scratch->vertices.clear();
+		scratch->indices.clear();
+		scratch->positiveRows.clear();
+		scratch->negativeRows.clear();
 	}
 
 }
