@@ -5,7 +5,6 @@
 #include <cstdlib>
 #include <cstring>
 #include <stdint.h>
-#include <unordered_set>
 #include <vector>
 
 #if defined(_MSC_VER)
@@ -17,22 +16,6 @@ struct ChunkCoordInternal
 	int x;
 	int y;
 	int z;
-
-	bool operator==(const ChunkCoordInternal& o) const
-	{
-		return x == o.x && y == o.y && z == o.z;
-	}
-};
-
-struct ChunkCoordHash
-{
-	size_t operator()(const ChunkCoordInternal& c) const
-	{
-		const uint32_t hx = (uint32_t)c.x * 73856093u;
-		const uint32_t hy = (uint32_t)c.y * 19349663u;
-		const uint32_t hz = (uint32_t)c.z * 83492791u;
-		return (size_t)(hx ^ hy ^ hz);
-	}
 };
 
 struct VW_Chunk
@@ -43,6 +26,9 @@ struct VW_Chunk
 	std::vector<uint64_t> occupancyX;
 	std::vector<uint64_t> occupancyY;
 	std::vector<uint64_t> occupancyZ;
+
+	int solidVoxelCount = 0;
+	uint32_t version = 0;
 };
 
 struct VW_World
@@ -60,8 +46,8 @@ struct VW_World
 	std::vector<uint8_t> voxels;
 	std::vector<VW_Chunk> chunks;
 
-	std::vector<ChunkCoordInternal> dirtyList;
-	std::unordered_set<ChunkCoordInternal, ChunkCoordHash> dirtySet;
+	std::vector<int> dirtyChunkIndices;
+	std::vector<uint8_t> dirtyFlags;
 };
 
 static bool InBounds(const VW_World* w, int x, int y, int z)
@@ -94,6 +80,20 @@ static int ChunkLinearIndex(const VW_World* w, int chunkX, int chunkY, int chunk
 	}
 
 	return chunkX + chunkY * w->chunksX + chunkZ * w->chunksX * w->chunksY;
+}
+
+static ChunkCoordInternal ChunkCoordFromLinearIndex(const VW_World* w, int index)
+{
+	ChunkCoordInternal c{ 0, 0, 0 };
+
+	if (!w || index < 0)
+		return c;
+
+	c.x = index % w->chunksX;
+	c.y = (index / w->chunksX) % w->chunksY;
+	c.z = index / (w->chunksX * w->chunksY);
+
+	return c;
 }
 
 static VW_Chunk* GetChunk(VW_World* w, int chunkX, int chunkY, int chunkZ)
@@ -174,7 +174,73 @@ static int CountTrailingZeros64(uint64_t value)
 #endif
 }
 
-static void UpdateOccupancyForVoxel(
+static void MarkDirtyChunkIndex(VW_World* w, int chunkIndex)
+{
+	if (!w)
+		return;
+
+	if (chunkIndex < 0 || chunkIndex >= (int)w->chunks.size())
+		return;
+
+	if (w->dirtyFlags[(size_t)chunkIndex] == 0)
+	{
+		w->dirtyFlags[(size_t)chunkIndex] = 1;
+		w->dirtyChunkIndices.push_back(chunkIndex);
+	}
+}
+
+static void MarkDirtyChunk(VW_World* w, int chunkX, int chunkY, int chunkZ)
+{
+	const int index = ChunkLinearIndex(w, chunkX, chunkY, chunkZ);
+	MarkDirtyChunkIndex(w, index);
+}
+
+static void MarkDirtyVoxelBounds(
+	VW_World* w,
+	int minX,
+	int minY,
+	int minZ,
+	int maxX,
+	int maxY,
+	int maxZ)
+{
+	if (!w)
+		return;
+
+	if (minX > maxX || minY > maxY || minZ > maxZ)
+		return;
+
+	// Expand by one voxel so neighboring chunks get remeshed when the edit
+	// touches a chunk boundary. This catches exposed/hidden faces across chunk edges.
+	minX = std::max(0, minX - 1);
+	minY = std::max(0, minY - 1);
+	minZ = std::max(0, minZ - 1);
+
+	maxX = std::min(w->sizeX - 1, maxX + 1);
+	maxY = std::min(w->sizeY - 1, maxY + 1);
+	maxZ = std::min(w->sizeZ - 1, maxZ + 1);
+
+	const int cs = w->chunkSize;
+
+	const int minChunkX = minX / cs;
+	const int minChunkY = minY / cs;
+	const int minChunkZ = minZ / cs;
+
+	const int maxChunkX = maxX / cs;
+	const int maxChunkY = maxY / cs;
+	const int maxChunkZ = maxZ / cs;
+
+	for (int cz = minChunkZ; cz <= maxChunkZ; cz++)
+	{
+		for (int cy = minChunkY; cy <= maxChunkY; cy++)
+		{
+			for (int cx = minChunkX; cx <= maxChunkX; cx++)
+				MarkDirtyChunk(w, cx, cy, cz);
+		}
+	}
+}
+
+static bool SetVoxelMaterialInternal(
 	VW_World* w,
 	int x,
 	int y,
@@ -182,7 +248,13 @@ static void UpdateOccupancyForVoxel(
 	uint8_t material)
 {
 	if (!InBounds(w, x, y, z))
-		return;
+		return false;
+
+	const int voxelIndex = VoxelIndex(w, x, y, z);
+	const uint8_t oldMaterial = w->voxels[(size_t)voxelIndex];
+
+	if (oldMaterial == material)
+		return false;
 
 	const int cs = w->chunkSize;
 
@@ -193,7 +265,7 @@ static void UpdateOccupancyForVoxel(
 	VW_Chunk* chunk = GetChunk(w, chunkX, chunkY, chunkZ);
 
 	if (!chunk)
-		return;
+		return false;
 
 	const int lx = x - chunkX * cs;
 	const int ly = y - chunkY * cs;
@@ -207,7 +279,15 @@ static void UpdateOccupancyForVoxel(
 	uint64_t& rowY = chunk->occupancyY[(size_t)(lz * cs + lx)];
 	uint64_t& rowZ = chunk->occupancyZ[(size_t)(ly * cs + lx)];
 
-	if (material != 0)
+	const bool oldSolid = oldMaterial != 0;
+	const bool newSolid = material != 0;
+
+	if (!oldSolid && newSolid)
+		chunk->solidVoxelCount++;
+	else if (oldSolid && !newSolid)
+		chunk->solidVoxelCount--;
+
+	if (newSolid)
 	{
 		rowX |= bitX;
 		rowY |= bitY;
@@ -219,6 +299,11 @@ static void UpdateOccupancyForVoxel(
 		rowY &= ~bitY;
 		rowZ &= ~bitZ;
 	}
+
+	w->voxels[(size_t)voxelIndex] = material;
+	chunk->version++;
+
+	return true;
 }
 
 static void ClearAllOccupancy(VW_World* w)
@@ -231,6 +316,9 @@ static void ClearAllOccupancy(VW_World* w)
 		std::fill(chunk.occupancyX.begin(), chunk.occupancyX.end(), 0ull);
 		std::fill(chunk.occupancyY.begin(), chunk.occupancyY.end(), 0ull);
 		std::fill(chunk.occupancyZ.begin(), chunk.occupancyZ.end(), 0ull);
+
+		chunk.solidVoxelCount = 0;
+		chunk.version++;
 	}
 }
 
@@ -241,6 +329,8 @@ static void RebuildAllOccupancy(VW_World* w)
 
 	ClearAllOccupancy(w);
 
+	const int cs = w->chunkSize;
+
 	for (int z = 0; z < w->sizeZ; z++)
 	{
 		for (int y = 0; y < w->sizeY; y++)
@@ -249,62 +339,30 @@ static void RebuildAllOccupancy(VW_World* w)
 			{
 				const uint8_t material = GetVoxelInternal(w, x, y, z);
 
-				if (material != 0)
-					UpdateOccupancyForVoxel(w, x, y, z, material);
+				if (material == 0)
+					continue;
+
+				const int chunkX = x / cs;
+				const int chunkY = y / cs;
+				const int chunkZ = z / cs;
+
+				VW_Chunk* chunk = GetChunk(w, chunkX, chunkY, chunkZ);
+
+				if (!chunk)
+					continue;
+
+				const int lx = x - chunkX * cs;
+				const int ly = y - chunkY * cs;
+				const int lz = z - chunkZ * cs;
+
+				chunk->occupancyX[(size_t)(lz * cs + ly)] |= 1ull << lx;
+				chunk->occupancyY[(size_t)(lz * cs + lx)] |= 1ull << ly;
+				chunk->occupancyZ[(size_t)(ly * cs + lx)] |= 1ull << lz;
+
+				chunk->solidVoxelCount++;
 			}
 		}
 	}
-}
-
-static void MarkDirtyChunk(VW_World* w, int chunkX, int chunkY, int chunkZ)
-{
-	if (!w)
-		return;
-
-	if (chunkX < 0 || chunkY < 0 || chunkZ < 0 ||
-		chunkX >= w->chunksX ||
-		chunkY >= w->chunksY ||
-		chunkZ >= w->chunksZ)
-	{
-		return;
-	}
-
-	const ChunkCoordInternal c{ chunkX, chunkY, chunkZ };
-
-	if (w->dirtySet.insert(c).second)
-		w->dirtyList.push_back(c);
-}
-
-static void MarkDirtyForVoxel(VW_World* w, int x, int y, int z)
-{
-	if (!w || !InBounds(w, x, y, z))
-		return;
-
-	const int cs = w->chunkSize;
-
-	const int cx = x / cs;
-	const int cy = y / cs;
-	const int cz = z / cs;
-
-	MarkDirtyChunk(w, cx, cy, cz);
-
-	if ((x % cs) == 0)
-		MarkDirtyChunk(w, cx - 1, cy, cz);
-
-	if ((x % cs) == cs - 1)
-		MarkDirtyChunk(w, cx + 1, cy, cz);
-
-	if ((y % cs) == 0)
-		MarkDirtyChunk(w, cx, cy - 1, cz);
-
-	if ((y % cs) == cs - 1)
-		MarkDirtyChunk(w, cx, cy + 1, cz);
-
-	if ((z % cs) == 0)
-		MarkDirtyChunk(w, cx, cy, cz - 1);
-
-	if ((z % cs) == cs - 1)
-		MarkDirtyChunk(w, cx, cy, cz + 1);
 }
 
 static float Dot(VW_Vec3 a, VW_Vec3 b)
@@ -413,8 +471,6 @@ static uint64_t BuildOccupancyRowCached(
 	if (!w || width <= 0 || width > 64)
 		return 0ull;
 
-	// If this row samples outside the current chunk on the fixed axis, it is a
-	// neighbor/border row. Use the safe global fallback for that case.
 	if (axisCoord < minCoord[axis] || axisCoord >= maxCoord[axis])
 	{
 		return BuildOccupancyRowFallback(
@@ -471,7 +527,6 @@ static uint64_t BuildOccupancyRowCached(
 
 	if (uAxis == 0)
 	{
-		// Bits run along X. Fixed coordinates are Y/Z.
 		const int ly = fixed[1];
 		const int lz = fixed[2];
 
@@ -480,7 +535,6 @@ static uint64_t BuildOccupancyRowCached(
 	}
 	else if (uAxis == 1)
 	{
-		// Bits run along Y. Fixed coordinates are X/Z.
 		const int lx = fixed[0];
 		const int lz = fixed[2];
 
@@ -489,7 +543,6 @@ static uint64_t BuildOccupancyRowCached(
 	}
 	else
 	{
-		// Bits run along Z. Fixed coordinates are X/Y.
 		const int lx = fixed[0];
 		const int ly = fixed[1];
 
@@ -799,6 +852,16 @@ static bool BuildChunkMeshBitGreedy(
 	if (w->chunkSize > 64)
 		return false;
 
+	const int chunkIndex = ChunkLinearIndex(w, c.x, c.y, c.z);
+
+	if (chunkIndex < 0)
+		return false;
+
+	const VW_Chunk& chunk = w->chunks[(size_t)chunkIndex];
+
+	if (chunk.solidVoxelCount == 0)
+		return true;
+
 	const int cs = w->chunkSize;
 
 	int minCoord[3];
@@ -946,6 +1009,7 @@ extern "C"
 
 		const int chunkCount = w->chunksX * w->chunksY * w->chunksZ;
 		w->chunks.resize((size_t)chunkCount);
+		w->dirtyFlags.resize((size_t)chunkCount, 0);
 
 		const size_t rowCount = (size_t)chunkSize * (size_t)chunkSize;
 
@@ -954,6 +1018,8 @@ extern "C"
 			chunk.occupancyX.resize(rowCount, 0ull);
 			chunk.occupancyY.resize(rowCount, 0ull);
 			chunk.occupancyZ.resize(rowCount, 0ull);
+			chunk.solidVoxelCount = 0;
+			chunk.version = 0;
 		}
 
 		return w;
@@ -987,8 +1053,8 @@ extern "C"
 
 		RebuildAllOccupancy(world);
 
-		world->dirtyList.clear();
-		world->dirtySet.clear();
+		world->dirtyChunkIndices.clear();
+		std::fill(world->dirtyFlags.begin(), world->dirtyFlags.end(), 0);
 
 		for (int z = 0; z < world->chunksZ; z++)
 		{
@@ -1075,14 +1141,10 @@ extern "C"
 		if (!world || !InBounds(world, x, y, z))
 			return 0;
 
-		const int idx = VoxelIndex(world, x, y, z);
-
-		if (world->voxels[(size_t)idx] == material)
+		if (!SetVoxelMaterialInternal(world, x, y, z, material))
 			return 1;
 
-		world->voxels[(size_t)idx] = material;
-		UpdateOccupancyForVoxel(world, x, y, z, material);
-		MarkDirtyForVoxel(world, x, y, z);
+		MarkDirtyVoxelBounds(world, x, y, z, x, y, z);
 
 		return 1;
 	}
@@ -1109,34 +1171,70 @@ extern "C"
 		const float r2 = radius * radius;
 		int changed = 0;
 
+		int changedMinX = world->sizeX;
+		int changedMinY = world->sizeY;
+		int changedMinZ = world->sizeZ;
+
+		int changedMaxX = -1;
+		int changedMaxY = -1;
+		int changedMaxZ = -1;
+
 		for (int z = minZ; z <= maxZ; z++)
 		{
+			const float pz = (float)z + 0.5f;
+			const float dz = pz - cz;
+			const float dz2 = dz * dz;
+
 			for (int y = minY; y <= maxY; y++)
 			{
-				for (int x = minX; x <= maxX; x++)
+				const float py = (float)y + 0.5f;
+				const float dy = py - cy;
+				const float dy2 = dy * dy;
+
+				const float remaining = r2 - dz2 - dy2;
+
+				if (remaining < 0.0f)
+					continue;
+
+				const float xExtent = std::sqrt(remaining);
+
+				const int rowMinX = std::max(minX, (int)std::floor(cx - xExtent));
+				const int rowMaxX = std::min(maxX, (int)std::ceil(cx + xExtent));
+
+				for (int x = rowMinX; x <= rowMaxX; x++)
 				{
 					const float px = (float)x + 0.5f;
-					const float py = (float)y + 0.5f;
-					const float pz = (float)z + 0.5f;
-
 					const float dx = px - cx;
-					const float dy = py - cy;
-					const float dz = pz - cz;
 
-					if ((dx * dx + dy * dy + dz * dz) <= r2)
+					if (dx * dx > remaining)
+						continue;
+
+					if (SetVoxelMaterialInternal(world, x, y, z, replacementMaterial))
 					{
-						const int idx = VoxelIndex(world, x, y, z);
+						changed++;
 
-						if (world->voxels[(size_t)idx] != replacementMaterial)
-						{
-							world->voxels[(size_t)idx] = replacementMaterial;
-							UpdateOccupancyForVoxel(world, x, y, z, replacementMaterial);
-							MarkDirtyForVoxel(world, x, y, z);
-							changed++;
-						}
+						changedMinX = std::min(changedMinX, x);
+						changedMinY = std::min(changedMinY, y);
+						changedMinZ = std::min(changedMinZ, z);
+
+						changedMaxX = std::max(changedMaxX, x);
+						changedMaxY = std::max(changedMaxY, y);
+						changedMaxZ = std::max(changedMaxZ, z);
 					}
 				}
 			}
+		}
+
+		if (changed > 0)
+		{
+			MarkDirtyVoxelBounds(
+				world,
+				changedMinX,
+				changedMinY,
+				changedMinZ,
+				changedMaxX,
+				changedMaxY,
+				changedMaxZ);
 		}
 
 		return changed;
@@ -1163,6 +1261,14 @@ extern "C"
 		const float r2 = radius * radius;
 		int changed = 0;
 
+		int changedMinX = world->sizeX;
+		int changedMinY = world->sizeY;
+		int changedMinZ = world->sizeZ;
+
+		int changedMaxX = -1;
+		int changedMaxY = -1;
+		int changedMaxZ = -1;
+
 		for (int z = minZ; z <= maxZ; z++)
 		{
 			for (int y = minY; y <= maxY; y++)
@@ -1176,18 +1282,33 @@ extern "C"
 
 					if (PointSegmentDistanceSq(p, a, b) <= r2)
 					{
-						const int idx = VoxelIndex(world, x, y, z);
-
-						if (world->voxels[(size_t)idx] != replacementMaterial)
+						if (SetVoxelMaterialInternal(world, x, y, z, replacementMaterial))
 						{
-							world->voxels[(size_t)idx] = replacementMaterial;
-							UpdateOccupancyForVoxel(world, x, y, z, replacementMaterial);
-							MarkDirtyForVoxel(world, x, y, z);
 							changed++;
+
+							changedMinX = std::min(changedMinX, x);
+							changedMinY = std::min(changedMinY, y);
+							changedMinZ = std::min(changedMinZ, z);
+
+							changedMaxX = std::max(changedMaxX, x);
+							changedMaxY = std::max(changedMaxY, y);
+							changedMaxZ = std::max(changedMaxZ, z);
 						}
 					}
 				}
 			}
+		}
+
+		if (changed > 0)
+		{
+			MarkDirtyVoxelBounds(
+				world,
+				changedMinX,
+				changedMinY,
+				changedMinZ,
+				changedMaxX,
+				changedMaxY,
+				changedMaxZ);
 		}
 
 		return changed;
@@ -1199,7 +1320,7 @@ extern "C"
 		if (!world)
 			return 0;
 
-		return (int)world->dirtyList.size();
+		return (int)world->dirtyChunkIndices.size();
 	}
 
 	VW_API int VW_GetDirtyChunkCoord(
@@ -1210,10 +1331,11 @@ extern "C"
 		if (!world || !outCoord)
 			return 0;
 
-		if (dirtyIndex < 0 || dirtyIndex >= (int)world->dirtyList.size())
+		if (dirtyIndex < 0 || dirtyIndex >= (int)world->dirtyChunkIndices.size())
 			return 0;
 
-		const ChunkCoordInternal c = world->dirtyList[(size_t)dirtyIndex];
+		const int chunkIndex = world->dirtyChunkIndices[(size_t)dirtyIndex];
+		const ChunkCoordInternal c = ChunkCoordFromLinearIndex(world, chunkIndex);
 
 		outCoord->x = c.x;
 		outCoord->y = c.y;
@@ -1232,7 +1354,9 @@ extern "C"
 		if (!world || !outMesh)
 			return 0;
 
-		if (ChunkLinearIndex(world, chunkX, chunkY, chunkZ) < 0)
+		const int chunkIndex = ChunkLinearIndex(world, chunkX, chunkY, chunkZ);
+
+		if (chunkIndex < 0)
 			return 0;
 
 		std::memset(outMesh, 0, sizeof(VW_Mesh));
@@ -1251,7 +1375,7 @@ extern "C"
 		outMesh->chunkX = chunkX;
 		outMesh->chunkY = chunkY;
 		outMesh->chunkZ = chunkZ;
-		outMesh->chunkLinearIndex = ChunkLinearIndex(world, chunkX, chunkY, chunkZ);
+		outMesh->chunkLinearIndex = chunkIndex;
 
 		outMesh->vertexCount = (uint32_t)vertices.size();
 		outMesh->indexCount = (uint32_t)indices.size();
@@ -1296,10 +1420,11 @@ extern "C"
 		if (!world || !outMesh)
 			return 0;
 
-		if (dirtyIndex < 0 || dirtyIndex >= (int)world->dirtyList.size())
+		if (dirtyIndex < 0 || dirtyIndex >= (int)world->dirtyChunkIndices.size())
 			return 0;
 
-		const ChunkCoordInternal c = world->dirtyList[(size_t)dirtyIndex];
+		const int chunkIndex = world->dirtyChunkIndices[(size_t)dirtyIndex];
+		const ChunkCoordInternal c = ChunkCoordFromLinearIndex(world, chunkIndex);
 
 		return VW_BuildChunkMesh(world, c.x, c.y, c.z, outMesh);
 	}
@@ -1331,8 +1456,13 @@ extern "C"
 		if (!world)
 			return;
 
-		world->dirtyList.clear();
-		world->dirtySet.clear();
+		for (int chunkIndex : world->dirtyChunkIndices)
+		{
+			if (chunkIndex >= 0 && chunkIndex < (int)world->dirtyFlags.size())
+				world->dirtyFlags[(size_t)chunkIndex] = 0;
+		}
+
+		world->dirtyChunkIndices.clear();
 	}
 
 }
