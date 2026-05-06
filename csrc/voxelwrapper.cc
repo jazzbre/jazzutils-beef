@@ -4,8 +4,13 @@
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
+#include <stdint.h>
 #include <unordered_set>
 #include <vector>
+
+#if defined(_MSC_VER)
+#include <intrin.h>
+#endif
 
 struct ChunkCoordInternal
 {
@@ -23,9 +28,9 @@ struct ChunkCoordHash
 {
 	size_t operator()(const ChunkCoordInternal& c) const
 	{
-		uint32_t hx = (uint32_t)c.x * 73856093u;
-		uint32_t hy = (uint32_t)c.y * 19349663u;
-		uint32_t hz = (uint32_t)c.z * 83492791u;
+		const uint32_t hx = (uint32_t)c.x * 73856093u;
+		const uint32_t hy = (uint32_t)c.y * 19349663u;
+		const uint32_t hz = (uint32_t)c.z * 83492791u;
 		return (size_t)(hx ^ hy ^ hz);
 	}
 };
@@ -51,7 +56,9 @@ struct VW_World
 static bool InBounds(const VW_World* w, int x, int y, int z)
 {
 	return w &&
-		x >= 0 && y >= 0 && z >= 0 &&
+		x >= 0 &&
+		y >= 0 &&
+		z >= 0 &&
 		x < w->sizeX &&
 		y < w->sizeY &&
 		z < w->sizeZ;
@@ -99,7 +106,7 @@ static void MarkDirtyChunk(VW_World* w, int chunkX, int chunkY, int chunkZ)
 		return;
 	}
 
-	ChunkCoordInternal c{ chunkX, chunkY, chunkZ };
+	const ChunkCoordInternal c{ chunkX, chunkY, chunkZ };
 
 	if (w->dirtySet.insert(c).second)
 		w->dirtyList.push_back(c);
@@ -187,8 +194,8 @@ static float LengthSq(VW_Vec3 v)
 
 static float PointSegmentDistanceSq(VW_Vec3 p, VW_Vec3 a, VW_Vec3 b)
 {
-	VW_Vec3 ab = Sub(b, a);
-	float denom = Dot(ab, ab);
+	const VW_Vec3 ab = Sub(b, a);
+	const float denom = Dot(ab, ab);
 
 	if (denom <= 0.000001f)
 		return LengthSq(Sub(p, a));
@@ -196,8 +203,145 @@ static float PointSegmentDistanceSq(VW_Vec3 p, VW_Vec3 a, VW_Vec3 b)
 	float t = Dot(Sub(p, a), ab) / denom;
 	t = Clamp01(t);
 
-	VW_Vec3 q = Add(a, Mul(ab, t));
+	const VW_Vec3 q = Add(a, Mul(ab, t));
 	return LengthSq(Sub(p, q));
+}
+
+static uint64_t MakeLowBitsMask(int bitCount)
+{
+	if (bitCount <= 0)
+		return 0ull;
+
+	if (bitCount >= 64)
+		return ~0ull;
+
+	return (1ull << bitCount) - 1ull;
+}
+
+static int CountTrailingZeros64(uint64_t value)
+{
+	if (value == 0)
+		return 64;
+
+#if defined(_MSC_VER) && defined(_M_X64)
+	unsigned long index = 0;
+	_BitScanForward64(&index, value);
+	return (int)index;
+#elif defined(_MSC_VER) && defined(_M_IX86)
+	const uint32_t low = (uint32_t)(value & 0xFFFFFFFFull);
+
+	if (low != 0)
+	{
+		unsigned long index = 0;
+		_BitScanForward(&index, low);
+		return (int)index;
+	}
+
+	const uint32_t high = (uint32_t)(value >> 32);
+
+	unsigned long index = 0;
+	_BitScanForward(&index, high);
+	return 32 + (int)index;
+#elif defined(__GNUC__) || defined(__clang__)
+	return __builtin_ctzll(value);
+#else
+	int count = 0;
+
+	while ((value & 1ull) == 0ull)
+	{
+		value >>= 1;
+		count++;
+	}
+
+	return count;
+#endif
+}
+
+static uint64_t BuildOccupancyRow64(
+	const VW_World* w,
+	int axis,
+	int axisCoord,
+	int uAxis,
+	int vAxis,
+	int uMin,
+	int vCoord,
+	int width)
+{
+	uint64_t bits = 0ull;
+
+	for (int x = 0; x < width; x++)
+	{
+		int p[3] = { 0, 0, 0 };
+
+		p[axis] = axisCoord;
+		p[uAxis] = uMin + x;
+		p[vAxis] = vCoord;
+
+		if (GetVoxelInternal(w, p[0], p[1], p[2]) != 0)
+			bits |= 1ull << x;
+	}
+
+	return bits;
+}
+
+static uint8_t GetFaceMaterial(
+	const VW_World* w,
+	int axis,
+	int sign,
+	int plane,
+	int uAxis,
+	int vAxis,
+	int u,
+	int v)
+{
+	int p[3] = { 0, 0, 0 };
+
+	if (sign > 0)
+	{
+		// Face belongs to solid voxel before the plane.
+		p[axis] = plane - 1;
+	}
+	else
+	{
+		// Face belongs to solid voxel after the plane.
+		p[axis] = plane;
+	}
+
+	p[uAxis] = u;
+	p[vAxis] = v;
+
+	return GetVoxelInternal(w, p[0], p[1], p[2]);
+}
+
+static bool FaceRunHasMaterial(
+	const VW_World* w,
+	int axis,
+	int sign,
+	int plane,
+	int uAxis,
+	int vAxis,
+	int u0,
+	int v,
+	int width,
+	uint8_t material)
+{
+	for (int x = 0; x < width; x++)
+	{
+		const uint8_t m = GetFaceMaterial(
+			w,
+			axis,
+			sign,
+			plane,
+			uAxis,
+			vAxis,
+			u0 + x,
+			v);
+
+		if (m != material)
+			return false;
+	}
+
+	return true;
 }
 
 static void AddGreedyQuad(
@@ -315,13 +459,134 @@ static void AddGreedyQuad(
 	}
 }
 
-static bool BuildChunkMeshGreedy(
+static void ConsumeBitGreedyFaceRows(
+	VW_World* w,
+	std::vector<VW_Vertex>& outVertices,
+	std::vector<uint32_t>& outIndices,
+	std::vector<uint64_t>& faceRows,
+	int axis,
+	int sign,
+	int plane,
+	int uAxis,
+	int vAxis,
+	int uMin,
+	int vMin,
+	int maskW,
+	int maskH)
+{
+	for (int y = 0; y < maskH; y++)
+	{
+		while (faceRows[(size_t)y] != 0ull)
+		{
+			const uint64_t row = faceRows[(size_t)y];
+			const int x = CountTrailingZeros64(row);
+
+			const int u0 = uMin + x;
+			const int v0 = vMin + y;
+
+			const uint8_t material = GetFaceMaterial(
+				w,
+				axis,
+				sign,
+				plane,
+				uAxis,
+				vAxis,
+				u0,
+				v0);
+
+			if (material == 0)
+			{
+				faceRows[(size_t)y] &= ~(1ull << x);
+				continue;
+			}
+
+			int quadW = 1;
+
+			while (x + quadW < maskW)
+			{
+				const uint64_t bit = 1ull << (x + quadW);
+
+				if ((faceRows[(size_t)y] & bit) == 0ull)
+					break;
+
+				const uint8_t m = GetFaceMaterial(
+					w,
+					axis,
+					sign,
+					plane,
+					uAxis,
+					vAxis,
+					uMin + x + quadW,
+					v0);
+
+				if (m != material)
+					break;
+
+				quadW++;
+			}
+
+			const uint64_t quadMask =
+				quadW >= 64
+				? ~0ull
+				: (((1ull << quadW) - 1ull) << x);
+
+			int quadH = 1;
+
+			while (y + quadH < maskH)
+			{
+				const uint64_t nextRow = faceRows[(size_t)(y + quadH)];
+
+				if ((nextRow & quadMask) != quadMask)
+					break;
+
+				const int nextV = vMin + y + quadH;
+
+				if (!FaceRunHasMaterial(
+					w,
+					axis,
+					sign,
+					plane,
+					uAxis,
+					vAxis,
+					u0,
+					nextV,
+					quadW,
+					material))
+				{
+					break;
+				}
+
+				quadH++;
+			}
+
+			for (int yy = 0; yy < quadH; yy++)
+				faceRows[(size_t)(y + yy)] &= ~quadMask;
+
+			AddGreedyQuad(
+				outVertices,
+				outIndices,
+				axis,
+				sign,
+				plane,
+				u0,
+				v0,
+				quadW,
+				quadH,
+				material);
+		}
+	}
+}
+
+static bool BuildChunkMeshBitGreedy(
 	VW_World* w,
 	ChunkCoordInternal c,
 	std::vector<VW_Vertex>& outVertices,
 	std::vector<uint32_t>& outIndices)
 {
 	if (!w)
+		return false;
+
+	if (w->chunkSize > 64)
 		return false;
 
 	const int cs = w->chunkSize;
@@ -358,121 +623,76 @@ static bool BuildChunkMeshGreedy(
 		const int maskW = uMax - uMin;
 		const int maskH = vMax - vMin;
 
-		std::vector<int> mask((size_t)maskW * (size_t)maskH);
+		if (maskW <= 0 || maskH <= 0 || maskW > 64)
+			continue;
+
+		const uint64_t validMask = MakeLowBitsMask(maskW);
+
+		std::vector<uint64_t> positiveRows((size_t)maskH);
+		std::vector<uint64_t> negativeRows((size_t)maskH);
 
 		for (int plane = minCoord[axis]; plane <= maxCoord[axis]; plane++)
 		{
-			std::fill(mask.begin(), mask.end(), 0);
-
-			for (int v = vMin; v < vMax; v++)
+			for (int y = 0; y < maskH; y++)
 			{
-				for (int u = uMin; u < uMax; u++)
-				{
-					int aPos[3] = { 0, 0, 0 };
-					int bPos[3] = { 0, 0, 0 };
+				const int vCoord = vMin + y;
 
-					aPos[axis] = plane - 1;
-					bPos[axis] = plane;
+				const uint64_t before = BuildOccupancyRow64(
+					w,
+					axis,
+					plane - 1,
+					uAxis,
+					vAxis,
+					uMin,
+					vCoord,
+					maskW);
 
-					aPos[uAxis] = u;
-					bPos[uAxis] = u;
+				const uint64_t after = BuildOccupancyRow64(
+					w,
+					axis,
+					plane,
+					uAxis,
+					vAxis,
+					uMin,
+					vCoord,
+					maskW);
 
-					aPos[vAxis] = v;
-					bPos[vAxis] = v;
-
-					const uint8_t a = GetVoxelInternal(w, aPos[0], aPos[1], aPos[2]);
-					const uint8_t b = GetVoxelInternal(w, bPos[0], bPos[1], bPos[2]);
-
-					const bool aSolid = a != 0;
-					const bool bSolid = b != 0;
-
-					int value = 0;
-
-					if (aSolid && !bSolid)
-					{
-						// Positive face of voxel A.
-						value = (int)a | (1 << 8);
-					}
-					else if (!aSolid && bSolid)
-					{
-						// Negative face of voxel B.
-						value = (int)b | (2 << 8);
-					}
-
-					const int mi = (u - uMin) + (v - vMin) * maskW;
-					mask[(size_t)mi] = value;
-				}
+				positiveRows[(size_t)y] = (before & ~after) & validMask;
+				negativeRows[(size_t)y] = (~before & after) & validMask;
 			}
 
-			for (int y = 0; y < maskH;)
-			{
-				for (int x = 0; x < maskW;)
-				{
-					const int value = mask[(size_t)(x + y * maskW)];
+			ConsumeBitGreedyFaceRows(
+				w,
+				outVertices,
+				outIndices,
+				positiveRows,
+				axis,
+				+1,
+				plane,
+				uAxis,
+				vAxis,
+				uMin,
+				vMin,
+				maskW,
+				maskH);
 
-					if (value == 0)
-					{
-						x++;
-						continue;
-					}
-
-					int quadW = 1;
-
-					while (x + quadW < maskW &&
-						mask[(size_t)((x + quadW) + y * maskW)] == value)
-					{
-						quadW++;
-					}
-
-					int quadH = 1;
-					bool stop = false;
-
-					while (y + quadH < maskH && !stop)
-					{
-						for (int k = 0; k < quadW; k++)
-						{
-							if (mask[(size_t)((x + k) + (y + quadH) * maskW)] != value)
-							{
-								stop = true;
-								break;
-							}
-						}
-
-						if (!stop)
-							quadH++;
-					}
-
-					for (int yy = 0; yy < quadH; yy++)
-					{
-						for (int xx = 0; xx < quadW; xx++)
-							mask[(size_t)((x + xx) + (y + yy) * maskW)] = 0;
-					}
-
-					const uint8_t material = (uint8_t)(value & 0xFF);
-					const int sign = ((value >> 8) == 1) ? +1 : -1;
-
-					const int u0 = uMin + x;
-					const int v0 = vMin + y;
-
-					AddGreedyQuad(
-						outVertices,
-						outIndices,
-						axis,
-						sign,
-						plane,
-						u0,
-						v0,
-						quadW,
-						quadH,
-						material);
-
-					x += quadW;
-				}
-
-				y++;
-			}
+			ConsumeBitGreedyFaceRows(
+				w,
+				outVertices,
+				outIndices,
+				negativeRows,
+				axis,
+				-1,
+				plane,
+				uAxis,
+				vAxis,
+				uMin,
+				vMin,
+				maskW,
+				maskH);
 		}
 	}
+
 	return true;
 }
 
@@ -490,6 +710,9 @@ extern "C"
 
 		if (chunkSize <= 0)
 			chunkSize = 32;
+
+		if (chunkSize > 64)
+			chunkSize = 64;
 
 		VW_World* w = new VW_World();
 
@@ -789,7 +1012,7 @@ extern "C"
 		c.y = chunkY;
 		c.z = chunkZ;
 
-		if (!BuildChunkMeshGreedy(world, c, vertices, indices))
+		if (!BuildChunkMeshBitGreedy(world, c, vertices, indices))
 			return 0;
 
 		outMesh->chunkX = chunkX;
@@ -804,6 +1027,13 @@ extern "C"
 		{
 			const size_t bytes = vertices.size() * sizeof(VW_Vertex);
 			outMesh->vertices = (VW_Vertex*)std::malloc(bytes);
+
+			if (!outMesh->vertices)
+			{
+				std::memset(outMesh, 0, sizeof(VW_Mesh));
+				return 0;
+			}
+
 			std::memcpy(outMesh->vertices, vertices.data(), bytes);
 		}
 
@@ -811,6 +1041,14 @@ extern "C"
 		{
 			const size_t bytes = indices.size() * sizeof(uint32_t);
 			outMesh->indices = (uint32_t*)std::malloc(bytes);
+
+			if (!outMesh->indices)
+			{
+				std::free(outMesh->vertices);
+				std::memset(outMesh, 0, sizeof(VW_Mesh));
+				return 0;
+			}
+
 			std::memcpy(outMesh->indices, indices.data(), bytes);
 		}
 
