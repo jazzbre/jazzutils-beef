@@ -15,3 +15,6 @@
 [submodule "submodules/sandbox"]
 	path = submodules/sandbox
 	url = https://github.com/melax/sandbox.git
+[submodule "submodules/binary-greedy-meshing"]
+	path = submodules/binary-greedy-meshing
+	url = https://github.com/cgerikj/binary-greedy-meshing
