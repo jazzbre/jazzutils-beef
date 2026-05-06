@@ -35,6 +35,16 @@ struct ChunkCoordHash
 	}
 };
 
+struct VW_Chunk
+{
+	// occupancyX[z * chunkSize + y] packs X bits.
+	// occupancyY[z * chunkSize + x] packs Y bits.
+	// occupancyZ[y * chunkSize + x] packs Z bits.
+	std::vector<uint64_t> occupancyX;
+	std::vector<uint64_t> occupancyY;
+	std::vector<uint64_t> occupancyZ;
+};
+
 struct VW_World
 {
 	int sizeX = 0;
@@ -48,6 +58,7 @@ struct VW_World
 	int chunksZ = 0;
 
 	std::vector<uint8_t> voxels;
+	std::vector<VW_Chunk> chunks;
 
 	std::vector<ChunkCoordInternal> dirtyList;
 	std::unordered_set<ChunkCoordInternal, ChunkCoordHash> dirtySet;
@@ -69,14 +80,6 @@ static int VoxelIndex(const VW_World* w, int x, int y, int z)
 	return x + y * w->sizeX + z * w->sizeX * w->sizeY;
 }
 
-static uint8_t GetVoxelInternal(const VW_World* w, int x, int y, int z)
-{
-	if (!InBounds(w, x, y, z))
-		return 0;
-
-	return w->voxels[(size_t)VoxelIndex(w, x, y, z)];
-}
-
 static int ChunkLinearIndex(const VW_World* w, int chunkX, int chunkY, int chunkZ)
 {
 	if (!w)
@@ -91,6 +94,166 @@ static int ChunkLinearIndex(const VW_World* w, int chunkX, int chunkY, int chunk
 	}
 
 	return chunkX + chunkY * w->chunksX + chunkZ * w->chunksX * w->chunksY;
+}
+
+static VW_Chunk* GetChunk(VW_World* w, int chunkX, int chunkY, int chunkZ)
+{
+	const int idx = ChunkLinearIndex(w, chunkX, chunkY, chunkZ);
+
+	if (idx < 0)
+		return nullptr;
+
+	return &w->chunks[(size_t)idx];
+}
+
+static const VW_Chunk* GetChunkConst(const VW_World* w, int chunkX, int chunkY, int chunkZ)
+{
+	const int idx = ChunkLinearIndex(w, chunkX, chunkY, chunkZ);
+
+	if (idx < 0)
+		return nullptr;
+
+	return &w->chunks[(size_t)idx];
+}
+
+static uint8_t GetVoxelInternal(const VW_World* w, int x, int y, int z)
+{
+	if (!InBounds(w, x, y, z))
+		return 0;
+
+	return w->voxels[(size_t)VoxelIndex(w, x, y, z)];
+}
+
+static uint64_t MakeLowBitsMask(int bitCount)
+{
+	if (bitCount <= 0)
+		return 0ull;
+
+	if (bitCount >= 64)
+		return ~0ull;
+
+	return (1ull << bitCount) - 1ull;
+}
+
+static int CountTrailingZeros64(uint64_t value)
+{
+	if (value == 0)
+		return 64;
+
+#if defined(_MSC_VER) && defined(_M_X64)
+	unsigned long index = 0;
+	_BitScanForward64(&index, value);
+	return (int)index;
+#elif defined(_MSC_VER) && defined(_M_IX86)
+	const uint32_t low = (uint32_t)(value & 0xFFFFFFFFull);
+
+	if (low != 0)
+	{
+		unsigned long index = 0;
+		_BitScanForward(&index, low);
+		return (int)index;
+	}
+
+	const uint32_t high = (uint32_t)(value >> 32);
+
+	unsigned long index = 0;
+	_BitScanForward(&index, high);
+	return 32 + (int)index;
+#elif defined(__GNUC__) || defined(__clang__)
+	return __builtin_ctzll(value);
+#else
+	int count = 0;
+
+	while ((value & 1ull) == 0ull)
+	{
+		value >>= 1;
+		count++;
+	}
+
+	return count;
+#endif
+}
+
+static void UpdateOccupancyForVoxel(
+	VW_World* w,
+	int x,
+	int y,
+	int z,
+	uint8_t material)
+{
+	if (!InBounds(w, x, y, z))
+		return;
+
+	const int cs = w->chunkSize;
+
+	const int chunkX = x / cs;
+	const int chunkY = y / cs;
+	const int chunkZ = z / cs;
+
+	VW_Chunk* chunk = GetChunk(w, chunkX, chunkY, chunkZ);
+
+	if (!chunk)
+		return;
+
+	const int lx = x - chunkX * cs;
+	const int ly = y - chunkY * cs;
+	const int lz = z - chunkZ * cs;
+
+	const uint64_t bitX = 1ull << lx;
+	const uint64_t bitY = 1ull << ly;
+	const uint64_t bitZ = 1ull << lz;
+
+	uint64_t& rowX = chunk->occupancyX[(size_t)(lz * cs + ly)];
+	uint64_t& rowY = chunk->occupancyY[(size_t)(lz * cs + lx)];
+	uint64_t& rowZ = chunk->occupancyZ[(size_t)(ly * cs + lx)];
+
+	if (material != 0)
+	{
+		rowX |= bitX;
+		rowY |= bitY;
+		rowZ |= bitZ;
+	}
+	else
+	{
+		rowX &= ~bitX;
+		rowY &= ~bitY;
+		rowZ &= ~bitZ;
+	}
+}
+
+static void ClearAllOccupancy(VW_World* w)
+{
+	if (!w)
+		return;
+
+	for (VW_Chunk& chunk : w->chunks)
+	{
+		std::fill(chunk.occupancyX.begin(), chunk.occupancyX.end(), 0ull);
+		std::fill(chunk.occupancyY.begin(), chunk.occupancyY.end(), 0ull);
+		std::fill(chunk.occupancyZ.begin(), chunk.occupancyZ.end(), 0ull);
+	}
+}
+
+static void RebuildAllOccupancy(VW_World* w)
+{
+	if (!w)
+		return;
+
+	ClearAllOccupancy(w);
+
+	for (int z = 0; z < w->sizeZ; z++)
+	{
+		for (int y = 0; y < w->sizeY; y++)
+		{
+			for (int x = 0; x < w->sizeX; x++)
+			{
+				const uint8_t material = GetVoxelInternal(w, x, y, z);
+
+				if (material != 0)
+					UpdateOccupancyForVoxel(w, x, y, z, material);
+			}
+		}
+	}
 }
 
 static void MarkDirtyChunk(VW_World* w, int chunkX, int chunkY, int chunkZ)
@@ -207,57 +370,7 @@ static float PointSegmentDistanceSq(VW_Vec3 p, VW_Vec3 a, VW_Vec3 b)
 	return LengthSq(Sub(p, q));
 }
 
-static uint64_t MakeLowBitsMask(int bitCount)
-{
-	if (bitCount <= 0)
-		return 0ull;
-
-	if (bitCount >= 64)
-		return ~0ull;
-
-	return (1ull << bitCount) - 1ull;
-}
-
-static int CountTrailingZeros64(uint64_t value)
-{
-	if (value == 0)
-		return 64;
-
-#if defined(_MSC_VER) && defined(_M_X64)
-	unsigned long index = 0;
-	_BitScanForward64(&index, value);
-	return (int)index;
-#elif defined(_MSC_VER) && defined(_M_IX86)
-	const uint32_t low = (uint32_t)(value & 0xFFFFFFFFull);
-
-	if (low != 0)
-	{
-		unsigned long index = 0;
-		_BitScanForward(&index, low);
-		return (int)index;
-	}
-
-	const uint32_t high = (uint32_t)(value >> 32);
-
-	unsigned long index = 0;
-	_BitScanForward(&index, high);
-	return 32 + (int)index;
-#elif defined(__GNUC__) || defined(__clang__)
-	return __builtin_ctzll(value);
-#else
-	int count = 0;
-
-	while ((value & 1ull) == 0ull)
-	{
-		value >>= 1;
-		count++;
-	}
-
-	return count;
-#endif
-}
-
-static uint64_t BuildOccupancyRow64(
+static uint64_t BuildOccupancyRowFallback(
 	const VW_World* w,
 	int axis,
 	int axisCoord,
@@ -269,19 +382,122 @@ static uint64_t BuildOccupancyRow64(
 {
 	uint64_t bits = 0ull;
 
-	for (int x = 0; x < width; x++)
+	for (int i = 0; i < width; i++)
 	{
 		int p[3] = { 0, 0, 0 };
 
 		p[axis] = axisCoord;
-		p[uAxis] = uMin + x;
+		p[uAxis] = uMin + i;
 		p[vAxis] = vCoord;
 
 		if (GetVoxelInternal(w, p[0], p[1], p[2]) != 0)
-			bits |= 1ull << x;
+			bits |= 1ull << i;
 	}
 
 	return bits;
+}
+
+static uint64_t BuildOccupancyRowCached(
+	const VW_World* w,
+	ChunkCoordInternal c,
+	const int minCoord[3],
+	const int maxCoord[3],
+	int axis,
+	int axisCoord,
+	int uAxis,
+	int vAxis,
+	int uMin,
+	int vCoord,
+	int width)
+{
+	if (!w || width <= 0 || width > 64)
+		return 0ull;
+
+	// If this row samples outside the current chunk on the fixed axis, it is a
+	// neighbor/border row. Use the safe global fallback for that case.
+	if (axisCoord < minCoord[axis] || axisCoord >= maxCoord[axis])
+	{
+		return BuildOccupancyRowFallback(
+			w,
+			axis,
+			axisCoord,
+			uAxis,
+			vAxis,
+			uMin,
+			vCoord,
+			width);
+	}
+
+	if (vCoord < minCoord[vAxis] || vCoord >= maxCoord[vAxis])
+	{
+		return BuildOccupancyRowFallback(
+			w,
+			axis,
+			axisCoord,
+			uAxis,
+			vAxis,
+			uMin,
+			vCoord,
+			width);
+	}
+
+	if (uMin < minCoord[uAxis] || (uMin + width) > maxCoord[uAxis])
+	{
+		return BuildOccupancyRowFallback(
+			w,
+			axis,
+			axisCoord,
+			uAxis,
+			vAxis,
+			uMin,
+			vCoord,
+			width);
+	}
+
+	const VW_Chunk* chunk = GetChunkConst(w, c.x, c.y, c.z);
+
+	if (!chunk)
+		return 0ull;
+
+	const int cs = w->chunkSize;
+
+	int fixed[3] = { 0, 0, 0 };
+	fixed[axis] = axisCoord - minCoord[axis];
+	fixed[vAxis] = vCoord - minCoord[vAxis];
+
+	const int localUStart = uMin - minCoord[uAxis];
+
+	uint64_t row = 0ull;
+
+	if (uAxis == 0)
+	{
+		// Bits run along X. Fixed coordinates are Y/Z.
+		const int ly = fixed[1];
+		const int lz = fixed[2];
+
+		row = chunk->occupancyX[(size_t)(lz * cs + ly)];
+		row >>= localUStart;
+	}
+	else if (uAxis == 1)
+	{
+		// Bits run along Y. Fixed coordinates are X/Z.
+		const int lx = fixed[0];
+		const int lz = fixed[2];
+
+		row = chunk->occupancyY[(size_t)(lz * cs + lx)];
+		row >>= localUStart;
+	}
+	else
+	{
+		// Bits run along Z. Fixed coordinates are X/Y.
+		const int lx = fixed[0];
+		const int ly = fixed[1];
+
+		row = chunk->occupancyZ[(size_t)(ly * cs + lx)];
+		row >>= localUStart;
+	}
+
+	return row & MakeLowBitsMask(width);
 }
 
 static uint8_t GetFaceMaterial(
@@ -297,15 +513,9 @@ static uint8_t GetFaceMaterial(
 	int p[3] = { 0, 0, 0 };
 
 	if (sign > 0)
-	{
-		// Face belongs to solid voxel before the plane.
 		p[axis] = plane - 1;
-	}
 	else
-	{
-		// Face belongs to solid voxel after the plane.
 		p[axis] = plane;
-	}
 
 	p[uAxis] = u;
 	p[vAxis] = v;
@@ -325,7 +535,7 @@ static bool FaceRunHasMaterial(
 	int width,
 	uint8_t material)
 {
-	for (int x = 0; x < width; x++)
+	for (int i = 0; i < width; i++)
 	{
 		const uint8_t m = GetFaceMaterial(
 			w,
@@ -334,7 +544,7 @@ static bool FaceRunHasMaterial(
 			plane,
 			uAxis,
 			vAxis,
-			u0 + x,
+			u0 + i,
 			v);
 
 		if (m != material)
@@ -637,8 +847,11 @@ static bool BuildChunkMeshBitGreedy(
 			{
 				const int vCoord = vMin + y;
 
-				const uint64_t before = BuildOccupancyRow64(
+				const uint64_t before = BuildOccupancyRowCached(
 					w,
+					c,
+					minCoord,
+					maxCoord,
 					axis,
 					plane - 1,
 					uAxis,
@@ -647,8 +860,11 @@ static bool BuildChunkMeshBitGreedy(
 					vCoord,
 					maskW);
 
-				const uint64_t after = BuildOccupancyRow64(
+				const uint64_t after = BuildOccupancyRowCached(
 					w,
+					c,
+					minCoord,
+					maxCoord,
 					axis,
 					plane,
 					uAxis,
@@ -728,6 +944,18 @@ extern "C"
 		const size_t voxelCount = (size_t)sizeX * (size_t)sizeY * (size_t)sizeZ;
 		w->voxels.resize(voxelCount, 0);
 
+		const int chunkCount = w->chunksX * w->chunksY * w->chunksZ;
+		w->chunks.resize((size_t)chunkCount);
+
+		const size_t rowCount = (size_t)chunkSize * (size_t)chunkSize;
+
+		for (VW_Chunk& chunk : w->chunks)
+		{
+			chunk.occupancyX.resize(rowCount, 0ull);
+			chunk.occupancyY.resize(rowCount, 0ull);
+			chunk.occupancyZ.resize(rowCount, 0ull);
+		}
+
 		return w;
 	}
 
@@ -756,6 +984,8 @@ extern "C"
 
 		const size_t voxelCount = (size_t)sizeX * (size_t)sizeY * (size_t)sizeZ;
 		std::memcpy(world->voxels.data(), voxels, voxelCount);
+
+		RebuildAllOccupancy(world);
 
 		world->dirtyList.clear();
 		world->dirtySet.clear();
@@ -851,6 +1081,7 @@ extern "C"
 			return 1;
 
 		world->voxels[(size_t)idx] = material;
+		UpdateOccupancyForVoxel(world, x, y, z, material);
 		MarkDirtyForVoxel(world, x, y, z);
 
 		return 1;
@@ -899,6 +1130,7 @@ extern "C"
 						if (world->voxels[(size_t)idx] != replacementMaterial)
 						{
 							world->voxels[(size_t)idx] = replacementMaterial;
+							UpdateOccupancyForVoxel(world, x, y, z, replacementMaterial);
 							MarkDirtyForVoxel(world, x, y, z);
 							changed++;
 						}
@@ -949,6 +1181,7 @@ extern "C"
 						if (world->voxels[(size_t)idx] != replacementMaterial)
 						{
 							world->voxels[(size_t)idx] = replacementMaterial;
+							UpdateOccupancyForVoxel(world, x, y, z, replacementMaterial);
 							MarkDirtyForVoxel(world, x, y, z);
 							changed++;
 						}
