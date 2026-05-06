@@ -15,6 +15,3 @@
 [submodule "submodules/sandbox"]
 	path = submodules/sandbox
 	url = https://github.com/melax/sandbox.git
-[submodule "submodules/stb"]
-	path = submodules/stb
-	url = https://github.com/nothings/stb
