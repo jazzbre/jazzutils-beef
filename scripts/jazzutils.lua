@@ -17,6 +17,7 @@ project "jazzutils"
    includedirs {
       path.join(SOURCE_DIR, "miniz_export"),
       path.join(SOURCE_DIR, "sandbox/include"),
+      path.join(SOURCE_DIR, "stb"),
    }
       
    files {

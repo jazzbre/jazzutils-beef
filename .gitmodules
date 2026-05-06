@@ -18,3 +18,6 @@
 [submodule "submodules/binary-greedy-meshing"]
 	path = submodules/binary-greedy-meshing
 	url = https://github.com/cgerikj/binary-greedy-meshing
+[submodule "submodules/stb"]
+	path = submodules/stb
+	url = https://github.com/nothings/stb
