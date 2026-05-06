@@ -960,6 +960,156 @@ static void ConsumeBitGreedyFaceRows(
 	}
 }
 
+static int GetChunkActualSizeX(const VW_World* w, int chunkX)
+{
+	const int minX = chunkX * w->chunkSize;
+	return std::min(w->chunkSize, w->sizeX - minX);
+}
+
+static int GetChunkActualSizeY(const VW_World* w, int chunkY)
+{
+	const int minY = chunkY * w->chunkSize;
+	return std::min(w->chunkSize, w->sizeY - minY);
+}
+
+static int GetChunkActualSizeZ(const VW_World* w, int chunkZ)
+{
+	const int minZ = chunkZ * w->chunkSize;
+	return std::min(w->chunkSize, w->sizeZ - minZ);
+}
+
+static bool IsVoxelSolidForHiddenTest(
+	const VW_World* w,
+	int x,
+	int y,
+	int z)
+{
+	// Outside the world counts as air.
+	// This is important: world-edge chunks must still render their outer faces.
+	if (!InBounds(w, x, y, z))
+		return false;
+
+	return GetVoxelInternal(w, x, y, z) != 0;
+}
+
+static bool IsFaceFullyCovered(
+	const VW_World* w,
+	int chunkX,
+	int chunkY,
+	int chunkZ,
+	int axis,
+	int sign)
+{
+	const int cs = w->chunkSize;
+
+	const int minX = chunkX * cs;
+	const int minY = chunkY * cs;
+	const int minZ = chunkZ * cs;
+
+	const int sx = GetChunkActualSizeX(w, chunkX);
+	const int sy = GetChunkActualSizeY(w, chunkY);
+	const int sz = GetChunkActualSizeZ(w, chunkZ);
+
+	if (sx <= 0 || sy <= 0 || sz <= 0)
+		return false;
+
+	if (axis == 0)
+	{
+		const int x = sign < 0 ? minX - 1 : minX + sx;
+
+		for (int z = minZ; z < minZ + sz; z++)
+		{
+			for (int y = minY; y < minY + sy; y++)
+			{
+				if (!IsVoxelSolidForHiddenTest(w, x, y, z))
+					return false;
+			}
+		}
+
+		return true;
+	}
+
+	if (axis == 1)
+	{
+		const int y = sign < 0 ? minY - 1 : minY + sy;
+
+		for (int z = minZ; z < minZ + sz; z++)
+		{
+			for (int x = minX; x < minX + sx; x++)
+			{
+				if (!IsVoxelSolidForHiddenTest(w, x, y, z))
+					return false;
+			}
+		}
+
+		return true;
+	}
+
+	{
+		const int z = sign < 0 ? minZ - 1 : minZ + sz;
+
+		for (int y = minY; y < minY + sy; y++)
+		{
+			for (int x = minX; x < minX + sx; x++)
+			{
+				if (!IsVoxelSolidForHiddenTest(w, x, y, z))
+					return false;
+			}
+		}
+
+		return true;
+	}
+}
+
+static bool IsFullSolidChunkFullyHidden(
+	const VW_World* w,
+	int chunkX,
+	int chunkY,
+	int chunkZ)
+{
+	if (!w)
+		return false;
+
+	const int chunkIndex = ChunkLinearIndex(w, chunkX, chunkY, chunkZ);
+
+	if (chunkIndex < 0)
+		return false;
+
+	const VW_Chunk& chunk = w->chunks[(size_t)chunkIndex];
+
+	const int sx = GetChunkActualSizeX(w, chunkX);
+	const int sy = GetChunkActualSizeY(w, chunkY);
+	const int sz = GetChunkActualSizeZ(w, chunkZ);
+
+	if (sx <= 0 || sy <= 0 || sz <= 0)
+		return false;
+
+	const int maxSolidVoxelCount = sx * sy * sz;
+
+	if (chunk.solidVoxelCount != maxSolidVoxelCount)
+		return false;
+
+	if (!IsFaceFullyCovered(w, chunkX, chunkY, chunkZ, 0, -1))
+		return false;
+
+	if (!IsFaceFullyCovered(w, chunkX, chunkY, chunkZ, 0, +1))
+		return false;
+
+	if (!IsFaceFullyCovered(w, chunkX, chunkY, chunkZ, 1, -1))
+		return false;
+
+	if (!IsFaceFullyCovered(w, chunkX, chunkY, chunkZ, 1, +1))
+		return false;
+
+	if (!IsFaceFullyCovered(w, chunkX, chunkY, chunkZ, 2, -1))
+		return false;
+
+	if (!IsFaceFullyCovered(w, chunkX, chunkY, chunkZ, 2, +1))
+		return false;
+
+	return true;
+}
+
 static bool BuildChunkMeshBitGreedy(
 	VW_World* w,
 	ChunkCoordInternal c,
@@ -982,6 +1132,9 @@ static bool BuildChunkMeshBitGreedy(
 	const VW_Chunk& chunk = w->chunks[(size_t)chunkIndex];
 
 	if (chunk.solidVoxelCount == 0)
+		return true;
+
+	if (IsFullSolidChunkFullyHidden(w, c.x, c.y, c.z))
 		return true;
 
 	const int cs = w->chunkSize;
