@@ -148,6 +148,22 @@ extern "C" {
 		VW_MeshBuildScratch* scratch,
 		VW_Mesh* outMesh);
 
+	VW_API int VW_BuildChunkMeshLODWithScratch(
+		VW_World* world,
+		int chunkX,
+		int chunkY,
+		int chunkZ,
+		int lod,
+		VW_MeshBuildScratch* scratch,
+		VW_Mesh* outMesh);
+
+	VW_API int VW_BuildDirtyChunkMeshLODWithScratch(
+		VW_World* world,
+		int dirtyIndex,
+		int lod,
+		VW_MeshBuildScratch* scratch,
+		VW_Mesh* outMesh);
+
 	VW_API void VW_FreeMesh(
 		VW_Mesh* mesh);
 

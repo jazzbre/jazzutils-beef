@@ -38,6 +38,8 @@ struct VW_MeshBuildScratch
 
 	std::vector<uint64_t> positiveRows;
 	std::vector<uint64_t> negativeRows;
+	// Used for LOD > 0.
+	std::vector<uint8_t> coarseVoxels;
 };
 
 struct VW_World
@@ -73,6 +75,11 @@ static bool InBounds(const VW_World* w, int x, int y, int z)
 static int VoxelIndex(const VW_World* w, int x, int y, int z)
 {
 	return x + y * w->sizeX + z * w->sizeX * w->sizeY;
+}
+
+static int CoarseIndex(int x, int y, int z, int sx, int sy)
+{
+	return x + y * sx + z * sx * sy;
 }
 
 static int ChunkLinearIndex(const VW_World* w, int chunkX, int chunkY, int chunkZ)
@@ -480,6 +487,257 @@ static float PointSegmentDistanceSq(VW_Vec3 p, VW_Vec3 a, VW_Vec3 b)
 
 	const VW_Vec3 q = Add(a, Mul(ab, t));
 	return LengthSq(Sub(p, q));
+}
+
+static uint8_t ChooseCoarseMaterialForBlock(
+	const VW_World* w,
+	int minX,
+	int minY,
+	int minZ,
+	int maxX,
+	int maxY,
+	int maxZ)
+{
+	int counts[256] = {};
+
+	for (int z = minZ; z < maxZ; z++)
+	{
+		for (int y = minY; y < maxY; y++)
+		{
+			for (int x = minX; x < maxX; x++)
+			{
+				const uint8_t material = GetVoxelInternal(w, x, y, z);
+
+				if (material != 0)
+					counts[material]++;
+			}
+		}
+	}
+
+	int bestCount = 0;
+	uint8_t bestMaterial = 0;
+
+	for (int i = 1; i < 256; i++)
+	{
+		if (counts[i] > bestCount)
+		{
+			bestCount = counts[i];
+			bestMaterial = (uint8_t)i;
+		}
+	}
+
+	return bestMaterial;
+}
+
+static bool BuildCoarseChunkVoxels(
+	VW_World* w,
+	ChunkCoordInternal c,
+	int lod,
+	VW_MeshBuildScratch& scratch,
+	int& outSX,
+	int& outSY,
+	int& outSZ,
+	int& outScale,
+	int& outBaseX,
+	int& outBaseY,
+	int& outBaseZ)
+{
+	if (!w || lod <= 0)
+		return false;
+
+	const int cs = w->chunkSize;
+	const int scale = 1 << lod;
+
+	const int minX = c.x * cs;
+	const int minY = c.y * cs;
+	const int minZ = c.z * cs;
+
+	const int maxX = std::min(minX + cs, w->sizeX);
+	const int maxY = std::min(minY + cs, w->sizeY);
+	const int maxZ = std::min(minZ + cs, w->sizeZ);
+
+	const int sizeX = maxX - minX;
+	const int sizeY = maxY - minY;
+	const int sizeZ = maxZ - minZ;
+
+	if (sizeX <= 0 || sizeY <= 0 || sizeZ <= 0)
+		return false;
+
+	const int coarseSX = (sizeX + scale - 1) / scale;
+	const int coarseSY = (sizeY + scale - 1) / scale;
+	const int coarseSZ = (sizeZ + scale - 1) / scale;
+
+	scratch.coarseVoxels.clear();
+	scratch.coarseVoxels.resize((size_t)coarseSX * (size_t)coarseSY * (size_t)coarseSZ, 0);
+
+	for (int cz = 0; cz < coarseSZ; cz++)
+	{
+		for (int cy = 0; cy < coarseSY; cy++)
+		{
+			for (int cx = 0; cx < coarseSX; cx++)
+			{
+				const int blockMinX = minX + cx * scale;
+				const int blockMinY = minY + cy * scale;
+				const int blockMinZ = minZ + cz * scale;
+
+				const int blockMaxX = std::min(blockMinX + scale, maxX);
+				const int blockMaxY = std::min(blockMinY + scale, maxY);
+				const int blockMaxZ = std::min(blockMinZ + scale, maxZ);
+
+				const uint8_t material = ChooseCoarseMaterialForBlock(
+					w,
+					blockMinX,
+					blockMinY,
+					blockMinZ,
+					blockMaxX,
+					blockMaxY,
+					blockMaxZ);
+
+				scratch.coarseVoxels[(size_t)CoarseIndex(cx, cy, cz, coarseSX, coarseSY)] = material;
+			}
+		}
+	}
+
+	outSX = coarseSX;
+	outSY = coarseSY;
+	outSZ = coarseSZ;
+	outScale = scale;
+
+	outBaseX = minX;
+	outBaseY = minY;
+	outBaseZ = minZ;
+
+	return true;
+}
+
+static uint8_t GetCoarseVoxel(
+	const std::vector<uint8_t>& voxels,
+	int sx,
+	int sy,
+	int sz,
+	int x,
+	int y,
+	int z)
+{
+	if (x < 0 || y < 0 || z < 0 ||
+		x >= sx || y >= sy || z >= sz)
+	{
+		return 0;
+	}
+
+	return voxels[(size_t)CoarseIndex(x, y, z, sx, sy)];
+}
+
+static void AddGreedyQuadScaled(
+	std::vector<VW_Vertex>& vertices,
+	std::vector<uint32_t>& indices,
+	int axis,
+	int sign,
+	int plane,
+	int u0,
+	int v0,
+	int width,
+	int height,
+	uint8_t material,
+	int scale,
+	int baseX,
+	int baseY,
+	int baseZ)
+{
+	const int uAxis = (axis + 1) % 3;
+	const int vAxis = (axis + 2) % 3;
+
+	int p0[3] = { 0, 0, 0 };
+	int p1[3] = { 0, 0, 0 };
+	int p2[3] = { 0, 0, 0 };
+	int p3[3] = { 0, 0, 0 };
+
+	p0[axis] = plane;
+	p1[axis] = plane;
+	p2[axis] = plane;
+	p3[axis] = plane;
+
+	p0[uAxis] = u0;
+	p0[vAxis] = v0;
+
+	p1[uAxis] = u0 + width;
+	p1[vAxis] = v0;
+
+	p2[uAxis] = u0 + width;
+	p2[vAxis] = v0 + height;
+
+	p3[uAxis] = u0;
+	p3[vAxis] = v0 + height;
+
+	float nx = 0.0f;
+	float ny = 0.0f;
+	float nz = 0.0f;
+
+	if (axis == 0)
+		nx = (float)sign;
+	else if (axis == 1)
+		ny = (float)sign;
+	else
+		nz = (float)sign;
+
+	const uint32_t base = (uint32_t)vertices.size();
+
+	VW_Vertex v[4] = {};
+
+	const int baseCoord[3] = { baseX, baseY, baseZ };
+
+	for (int i = 0; i < 4; i++)
+	{
+		const int* p = i == 0 ? p0 : i == 1 ? p1 : i == 2 ? p2 : p3;
+
+		v[i].x = (float)(baseCoord[0] + p[0] * scale);
+		v[i].y = (float)(baseCoord[1] + p[1] * scale);
+		v[i].z = (float)(baseCoord[2] + p[2] * scale);
+
+		v[i].nx = nx;
+		v[i].ny = ny;
+		v[i].nz = nz;
+
+		v[i].material = material;
+	}
+
+	v[0].u = 0.0f;
+	v[0].v = 0.0f;
+
+	v[1].u = (float)(width * scale);
+	v[1].v = 0.0f;
+
+	v[2].u = (float)(width * scale);
+	v[2].v = (float)(height * scale);
+
+	v[3].u = 0.0f;
+	v[3].v = (float)(height * scale);
+
+	vertices.push_back(v[0]);
+	vertices.push_back(v[1]);
+	vertices.push_back(v[2]);
+	vertices.push_back(v[3]);
+
+	if (sign > 0)
+	{
+		indices.push_back(base + 0);
+		indices.push_back(base + 1);
+		indices.push_back(base + 2);
+
+		indices.push_back(base + 0);
+		indices.push_back(base + 2);
+		indices.push_back(base + 3);
+	}
+	else
+	{
+		indices.push_back(base + 0);
+		indices.push_back(base + 2);
+		indices.push_back(base + 1);
+
+		indices.push_back(base + 0);
+		indices.push_back(base + 3);
+		indices.push_back(base + 2);
+	}
 }
 
 static uint64_t BuildOccupancyRowFallback(
@@ -1110,6 +1368,60 @@ static bool IsFullSolidChunkFullyHidden(
 	return true;
 }
 
+static int FillOutMeshFromScratch(
+	VW_MeshBuildScratch* scratch,
+	int chunkX,
+	int chunkY,
+	int chunkZ,
+	int chunkIndex,
+	VW_Mesh* outMesh)
+{
+	if (!scratch || !outMesh)
+		return 0;
+
+	std::vector<VW_Vertex>& vertices = scratch->vertices;
+	std::vector<uint32_t>& indices = scratch->indices;
+
+	outMesh->chunkX = chunkX;
+	outMesh->chunkY = chunkY;
+	outMesh->chunkZ = chunkZ;
+	outMesh->chunkLinearIndex = chunkIndex;
+
+	outMesh->vertexCount = (uint32_t)vertices.size();
+	outMesh->indexCount = (uint32_t)indices.size();
+
+	if (!vertices.empty())
+	{
+		const size_t bytes = vertices.size() * sizeof(VW_Vertex);
+		outMesh->vertices = (VW_Vertex*)std::malloc(bytes);
+
+		if (!outMesh->vertices)
+		{
+			std::memset(outMesh, 0, sizeof(VW_Mesh));
+			return 0;
+		}
+
+		std::memcpy(outMesh->vertices, vertices.data(), bytes);
+	}
+
+	if (!indices.empty())
+	{
+		const size_t bytes = indices.size() * sizeof(uint32_t);
+		outMesh->indices = (uint32_t*)std::malloc(bytes);
+
+		if (!outMesh->indices)
+		{
+			std::free(outMesh->vertices);
+			std::memset(outMesh, 0, sizeof(VW_Mesh));
+			return 0;
+		}
+
+		std::memcpy(outMesh->indices, indices.data(), bytes);
+	}
+
+	return 1;
+}
+
 static bool BuildChunkMeshBitGreedy(
 	VW_World* w,
 	ChunkCoordInternal c,
@@ -1254,6 +1566,241 @@ static bool BuildChunkMeshBitGreedy(
 				vMin,
 				maskW,
 				maskH);
+		}
+	}
+
+	return true;
+}
+
+static bool BuildChunkMeshLODCoarseGreedy(
+	VW_World* w,
+	ChunkCoordInternal c,
+	int lod,
+	VW_MeshBuildScratch& scratch)
+{
+	scratch.vertices.clear();
+	scratch.indices.clear();
+
+	int sx = 0;
+	int sy = 0;
+	int sz = 0;
+	int scale = 1;
+	int baseX = 0;
+	int baseY = 0;
+	int baseZ = 0;
+
+	if (!BuildCoarseChunkVoxels(
+		w,
+		c,
+		lod,
+		scratch,
+		sx,
+		sy,
+		sz,
+		scale,
+		baseX,
+		baseY,
+		baseZ))
+	{
+		return false;
+	}
+
+	int dims[3] = { sx, sy, sz };
+
+	for (int axis = 0; axis < 3; axis++)
+	{
+		const int uAxis = (axis + 1) % 3;
+		const int vAxis = (axis + 2) % 3;
+
+		const int maskW = dims[uAxis];
+		const int maskH = dims[vAxis];
+
+		if (maskW <= 0 || maskH <= 0 || maskW > 64)
+			continue;
+
+		scratch.positiveRows.resize((size_t)maskH);
+		scratch.negativeRows.resize((size_t)maskH);
+
+		std::vector<uint64_t>& positiveRows = scratch.positiveRows;
+		std::vector<uint64_t>& negativeRows = scratch.negativeRows;
+
+		for (int plane = 0; plane <= dims[axis]; plane++)
+		{
+			for (int y = 0; y < maskH; y++)
+			{
+				uint64_t positive = 0;
+				uint64_t negative = 0;
+
+				for (int x = 0; x < maskW; x++)
+				{
+					int aPos[3] = { 0, 0, 0 };
+					int bPos[3] = { 0, 0, 0 };
+
+					aPos[axis] = plane - 1;
+					bPos[axis] = plane;
+
+					aPos[uAxis] = x;
+					bPos[uAxis] = x;
+
+					aPos[vAxis] = y;
+					bPos[vAxis] = y;
+
+					const uint8_t a = GetCoarseVoxel(
+						scratch.coarseVoxels,
+						sx,
+						sy,
+						sz,
+						aPos[0],
+						aPos[1],
+						aPos[2]);
+
+					const uint8_t b = GetCoarseVoxel(
+						scratch.coarseVoxels,
+						sx,
+						sy,
+						sz,
+						bPos[0],
+						bPos[1],
+						bPos[2]);
+
+					if (a != 0 && b == 0)
+						positive |= 1ull << x;
+					else if (a == 0 && b != 0)
+						negative |= 1ull << x;
+				}
+
+				positiveRows[(size_t)y] = positive;
+				negativeRows[(size_t)y] = negative;
+			}
+
+			auto ConsumeLODRows =
+				[&](std::vector<uint64_t>& rows, int sign)
+				{
+					for (int y = 0; y < maskH; y++)
+					{
+						while (rows[(size_t)y] != 0)
+						{
+							const int x = CountTrailingZeros64(rows[(size_t)y]);
+
+							int matPos[3] = { 0, 0, 0 };
+
+							matPos[axis] = sign > 0 ? plane - 1 : plane;
+							matPos[uAxis] = x;
+							matPos[vAxis] = y;
+
+							const uint8_t material = GetCoarseVoxel(
+								scratch.coarseVoxels,
+								sx,
+								sy,
+								sz,
+								matPos[0],
+								matPos[1],
+								matPos[2]);
+
+							if (material == 0)
+							{
+								rows[(size_t)y] &= ~(1ull << x);
+								continue;
+							}
+
+							int quadW = 1;
+
+							while (x + quadW < maskW)
+							{
+								const uint64_t bit = 1ull << (x + quadW);
+
+								if ((rows[(size_t)y] & bit) == 0)
+									break;
+
+								int p[3] = { 0, 0, 0 };
+
+								p[axis] = sign > 0 ? plane - 1 : plane;
+								p[uAxis] = x + quadW;
+								p[vAxis] = y;
+
+								const uint8_t m = GetCoarseVoxel(
+									scratch.coarseVoxels,
+									sx,
+									sy,
+									sz,
+									p[0],
+									p[1],
+									p[2]);
+
+								if (m != material)
+									break;
+
+								quadW++;
+							}
+
+							const uint64_t quadMask =
+								quadW >= 64
+								? ~0ull
+								: (((1ull << quadW) - 1ull) << x);
+
+							int quadH = 1;
+
+							while (y + quadH < maskH)
+							{
+								if ((rows[(size_t)(y + quadH)] & quadMask) != quadMask)
+									break;
+
+								bool sameMaterial = true;
+
+								for (int k = 0; k < quadW; k++)
+								{
+									int p[3] = { 0, 0, 0 };
+
+									p[axis] = sign > 0 ? plane - 1 : plane;
+									p[uAxis] = x + k;
+									p[vAxis] = y + quadH;
+
+									const uint8_t m = GetCoarseVoxel(
+										scratch.coarseVoxels,
+										sx,
+										sy,
+										sz,
+										p[0],
+										p[1],
+										p[2]);
+
+									if (m != material)
+									{
+										sameMaterial = false;
+										break;
+									}
+								}
+
+								if (!sameMaterial)
+									break;
+
+								quadH++;
+							}
+
+							for (int yy = 0; yy < quadH; yy++)
+								rows[(size_t)(y + yy)] &= ~quadMask;
+
+							AddGreedyQuadScaled(
+								scratch.vertices,
+								scratch.indices,
+								axis,
+								sign,
+								plane,
+								x,
+								y,
+								quadW,
+								quadH,
+								material,
+								scale,
+								baseX,
+								baseY,
+								baseZ);
+						}
+					}
+				};
+
+			ConsumeLODRows(positiveRows, +1);
+			ConsumeLODRows(negativeRows, -1);
 		}
 	}
 
@@ -1806,8 +2353,47 @@ extern "C"
 		VW_MeshBuildScratch* scratch,
 		VW_Mesh* outMesh)
 	{
+		return VW_BuildChunkMeshLODWithScratch(
+			world,
+			chunkX,
+			chunkY,
+			chunkZ,
+			0,
+			scratch,
+			outMesh);
+	}
+
+	VW_API int VW_BuildDirtyChunkMeshWithScratch(
+		VW_World* world,
+		int dirtyIndex,
+		VW_MeshBuildScratch* scratch,
+		VW_Mesh* outMesh)
+	{
+		return VW_BuildDirtyChunkMeshLODWithScratch(
+			world,
+			dirtyIndex,
+			0,
+			scratch,
+			outMesh);
+	}
+
+	VW_API int VW_BuildChunkMeshLODWithScratch(
+		VW_World* world,
+		int chunkX,
+		int chunkY,
+		int chunkZ,
+		int lod,
+		VW_MeshBuildScratch* scratch,
+		VW_Mesh* outMesh)
+	{
 		if (!world || !scratch || !outMesh)
 			return 0;
+
+		if (lod < 0)
+			lod = 0;
+
+		if (lod > 6)
+			lod = 6;
 
 		const int chunkIndex = ChunkLinearIndex(world, chunkX, chunkY, chunkZ);
 
@@ -1821,55 +2407,29 @@ extern "C"
 		c.y = chunkY;
 		c.z = chunkZ;
 
-		if (!BuildChunkMeshBitGreedy(world, c, *scratch))
+		bool ok = false;
+
+		if (lod == 0)
+			ok = BuildChunkMeshBitGreedy(world, c, *scratch);
+		else
+			ok = BuildChunkMeshLODCoarseGreedy(world, c, lod, *scratch);
+
+		if (!ok)
 			return 0;
 
-		std::vector<VW_Vertex>& vertices = scratch->vertices;
-		std::vector<uint32_t>& indices = scratch->indices;
-
-		outMesh->chunkX = chunkX;
-		outMesh->chunkY = chunkY;
-		outMesh->chunkZ = chunkZ;
-		outMesh->chunkLinearIndex = chunkIndex;
-
-		outMesh->vertexCount = (uint32_t)vertices.size();
-		outMesh->indexCount = (uint32_t)indices.size();
-
-		if (!vertices.empty())
-		{
-			const size_t bytes = vertices.size() * sizeof(VW_Vertex);
-			outMesh->vertices = (VW_Vertex*)std::malloc(bytes);
-
-			if (!outMesh->vertices)
-			{
-				std::memset(outMesh, 0, sizeof(VW_Mesh));
-				return 0;
-			}
-
-			std::memcpy(outMesh->vertices, vertices.data(), bytes);
-		}
-
-		if (!indices.empty())
-		{
-			const size_t bytes = indices.size() * sizeof(uint32_t);
-			outMesh->indices = (uint32_t*)std::malloc(bytes);
-
-			if (!outMesh->indices)
-			{
-				std::free(outMesh->vertices);
-				std::memset(outMesh, 0, sizeof(VW_Mesh));
-				return 0;
-			}
-
-			std::memcpy(outMesh->indices, indices.data(), bytes);
-		}
-
-		return 1;
+		return FillOutMeshFromScratch(
+			scratch,
+			chunkX,
+			chunkY,
+			chunkZ,
+			chunkIndex,
+			outMesh);
 	}
 
-	VW_API int VW_BuildDirtyChunkMeshWithScratch(
+	VW_API int VW_BuildDirtyChunkMeshLODWithScratch(
 		VW_World* world,
 		int dirtyIndex,
+		int lod,
 		VW_MeshBuildScratch* scratch,
 		VW_Mesh* outMesh)
 	{
@@ -1882,11 +2442,12 @@ extern "C"
 		const int chunkIndex = world->dirtyChunkIndices[(size_t)dirtyIndex];
 		const ChunkCoordInternal c = ChunkCoordFromLinearIndex(world, chunkIndex);
 
-		return VW_BuildChunkMeshWithScratch(
+		return VW_BuildChunkMeshLODWithScratch(
 			world,
 			c.x,
 			c.y,
 			c.z,
+			lod,
 			scratch,
 			outMesh);
 	}
@@ -1935,6 +2496,7 @@ extern "C"
 		scratch->indices.reserve(1536);
 		scratch->positiveRows.reserve(64);
 		scratch->negativeRows.reserve(64);
+		scratch->coarseVoxels.reserve(32 * 32 * 32);
 
 		return scratch;
 	}

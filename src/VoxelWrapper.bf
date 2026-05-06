@@ -200,6 +200,24 @@ namespace jazzutils
 				int32 dirtyIndex,
 				VW_MeshBuildScratch* scratch,
 				VW_Mesh* outMesh);
+
+			[CLink]
+			public static extern int32 VW_BuildChunkMeshLODWithScratch(
+				void* world,
+				int32 chunkX,
+				int32 chunkY,
+				int32 chunkZ,
+				int32 lod,
+				VW_MeshBuildScratch* scratch,
+				VW_Mesh* outMesh);
+
+			[CLink]
+			public static extern int32 VW_BuildDirtyChunkMeshLODWithScratch(
+				void* world,
+				int32 dirtyIndex,
+				int32 lod,
+				VW_MeshBuildScratch* scratch,
+				VW_Mesh* outMesh);
 		}
 
 		public class VoxelMeshBuildScratch
@@ -366,6 +384,13 @@ namespace jazzutils
 				return VoxelNative.VW_GetChunkLinearIndex(mHandle, chunkX, chunkY, chunkZ);
 			}
 
+			public bool BuildChunkMeshWithScratch(int32 chunkX, int32 chunkY, int32 chunkZ, VoxelMeshBuildScratch scratch, out VW_Mesh mesh)
+			{
+				mesh = default;
+
+				return VoxelNative.VW_BuildChunkMeshWithScratch(mHandle, chunkX, chunkY, chunkZ, scratch.Handle, &mesh) != 0;
+			}
+
 			public bool BuildDirtyChunkMeshWithScratch(int32 dirtyIndex, VoxelMeshBuildScratch scratch, out VW_Mesh mesh)
 			{
 				mesh = default;
@@ -373,11 +398,31 @@ namespace jazzutils
 				return VoxelNative.VW_BuildDirtyChunkMeshWithScratch(mHandle, dirtyIndex, scratch.Handle, &mesh) != 0;
 			}
 
-			public bool BuildChunkMeshWithScratch(int32 chunkX, int32 chunkY, int32 chunkZ, VoxelMeshBuildScratch scratch, out VW_Mesh mesh)
+			public bool BuildChunkMeshLODWithScratch(
+				int32 chunkX,
+				int32 chunkY,
+				int32 chunkZ,
+				int32 lod,
+				VoxelMeshBuildScratch scratch,
+				out VW_Mesh mesh)
+			{
+				mesh = default(VW_Mesh);
+
+				return VoxelNative.VW_BuildChunkMeshLODWithScratch(
+					mHandle,
+					chunkX,
+					chunkY,
+					chunkZ,
+					lod,
+					scratch.Handle,
+					&mesh) != 0;
+			}
+
+			public bool BuildDirtyChunkMeshLODWithScratch(int32 dirtyIndex, int32 lod, VoxelMeshBuildScratch scratch, out VW_Mesh mesh)
 			{
 				mesh = default;
 
-				return VoxelNative.VW_BuildChunkMeshWithScratch(mHandle, chunkX, chunkY, chunkZ, scratch.Handle, &mesh) != 0;
+				return VoxelNative.VW_BuildDirtyChunkMeshLODWithScratch(mHandle, dirtyIndex, lod, scratch.Handle, &mesh) != 0;
 			}
 
 			public void FreeMesh(ref VW_Mesh mesh)
