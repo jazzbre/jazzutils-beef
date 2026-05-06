@@ -31,6 +31,19 @@ struct VW_Chunk
 	uint32_t version = 0;
 };
 
+struct VW_CoarseVoxel
+{
+	uint8_t solid;
+	uint8_t material;
+
+	uint8_t faceNX;
+	uint8_t facePX;
+	uint8_t faceNY;
+	uint8_t facePY;
+	uint8_t faceNZ;
+	uint8_t facePZ;
+};
+
 struct VW_MeshBuildScratch
 {
 	std::vector<VW_Vertex> vertices;
@@ -39,7 +52,7 @@ struct VW_MeshBuildScratch
 	std::vector<uint64_t> positiveRows;
 	std::vector<uint64_t> negativeRows;
 	// Used for LOD > 0.
-	std::vector<uint8_t> coarseVoxels;
+	std::vector<VW_CoarseVoxel> coarseVoxelsLOD;
 };
 
 struct VW_World
@@ -489,7 +502,7 @@ static float PointSegmentDistanceSq(VW_Vec3 p, VW_Vec3 a, VW_Vec3 b)
 	return LengthSq(Sub(p, q));
 }
 
-static uint8_t ChooseCoarseMaterialForBlock(
+static uint8_t ChooseDominantMaterialInFineBlock(
 	const VW_World* w,
 	int minX,
 	int minY,
@@ -502,6 +515,80 @@ static uint8_t ChooseCoarseMaterialForBlock(
 
 	for (int z = minZ; z < maxZ; z++)
 	{
+		for (int y = minY; y < maxY; y++)
+		{
+			for (int x = minX; x < maxX; x++)
+			{
+				const uint8_t material = GetVoxelInternal(w, x, y, z);
+
+				if (material != 0)
+					counts[material]++;
+			}
+		}
+	}
+
+	int bestCount = 0;
+	uint8_t bestMaterial = 0;
+
+	for (int i = 1; i < 256; i++)
+	{
+		if (counts[i] > bestCount)
+		{
+			bestCount = counts[i];
+			bestMaterial = (uint8_t)i;
+		}
+	}
+
+	return bestMaterial;
+}
+
+static uint8_t ChooseDominantMaterialOnFineFace(
+	const VW_World* w,
+	int minX,
+	int minY,
+	int minZ,
+	int maxX,
+	int maxY,
+	int maxZ,
+	int axis,
+	int sign)
+{
+	int counts[256] = {};
+
+	if (axis == 0)
+	{
+		const int x = sign < 0 ? minX : maxX - 1;
+
+		for (int z = minZ; z < maxZ; z++)
+		{
+			for (int y = minY; y < maxY; y++)
+			{
+				const uint8_t material = GetVoxelInternal(w, x, y, z);
+
+				if (material != 0)
+					counts[material]++;
+			}
+		}
+	}
+	else if (axis == 1)
+	{
+		const int y = sign < 0 ? minY : maxY - 1;
+
+		for (int z = minZ; z < maxZ; z++)
+		{
+			for (int x = minX; x < maxX; x++)
+			{
+				const uint8_t material = GetVoxelInternal(w, x, y, z);
+
+				if (material != 0)
+					counts[material]++;
+			}
+		}
+	}
+	else
+	{
+		const int z = sign < 0 ? minZ : maxZ - 1;
+
 		for (int y = minY; y < maxY; y++)
 		{
 			for (int x = minX; x < maxX; x++)
@@ -567,8 +654,9 @@ static bool BuildCoarseChunkVoxels(
 	const int coarseSY = (sizeY + scale - 1) / scale;
 	const int coarseSZ = (sizeZ + scale - 1) / scale;
 
-	scratch.coarseVoxels.clear();
-	scratch.coarseVoxels.resize((size_t)coarseSX * (size_t)coarseSY * (size_t)coarseSZ, 0);
+	scratch.coarseVoxelsLOD.clear();
+	scratch.coarseVoxelsLOD.resize(
+		(size_t)coarseSX * (size_t)coarseSY * (size_t)coarseSZ);
 
 	for (int cz = 0; cz < coarseSZ; cz++)
 	{
@@ -584,7 +672,8 @@ static bool BuildCoarseChunkVoxels(
 				const int blockMaxY = std::min(blockMinY + scale, maxY);
 				const int blockMaxZ = std::min(blockMinZ + scale, maxZ);
 
-				const uint8_t material = ChooseCoarseMaterialForBlock(
+				VW_CoarseVoxel cv = {};
+				cv.material = ChooseDominantMaterialInFineBlock(
 					w,
 					blockMinX,
 					blockMinY,
@@ -593,7 +682,79 @@ static bool BuildCoarseChunkVoxels(
 					blockMaxY,
 					blockMaxZ);
 
-				scratch.coarseVoxels[(size_t)CoarseIndex(cx, cy, cz, coarseSX, coarseSY)] = material;
+				cv.solid = cv.material != 0 ? 1 : 0;
+
+				if (cv.solid)
+				{
+					cv.faceNX = ChooseDominantMaterialOnFineFace(
+						w,
+						blockMinX,
+						blockMinY,
+						blockMinZ,
+						blockMaxX,
+						blockMaxY,
+						blockMaxZ,
+						0,
+						-1);
+
+					cv.facePX = ChooseDominantMaterialOnFineFace(
+						w,
+						blockMinX,
+						blockMinY,
+						blockMinZ,
+						blockMaxX,
+						blockMaxY,
+						blockMaxZ,
+						0,
+						+1);
+
+					cv.faceNY = ChooseDominantMaterialOnFineFace(
+						w,
+						blockMinX,
+						blockMinY,
+						blockMinZ,
+						blockMaxX,
+						blockMaxY,
+						blockMaxZ,
+						1,
+						-1);
+
+					cv.facePY = ChooseDominantMaterialOnFineFace(
+						w,
+						blockMinX,
+						blockMinY,
+						blockMinZ,
+						blockMaxX,
+						blockMaxY,
+						blockMaxZ,
+						1,
+						+1);
+
+					cv.faceNZ = ChooseDominantMaterialOnFineFace(
+						w,
+						blockMinX,
+						blockMinY,
+						blockMinZ,
+						blockMaxX,
+						blockMaxY,
+						blockMaxZ,
+						2,
+						-1);
+
+					cv.facePZ = ChooseDominantMaterialOnFineFace(
+						w,
+						blockMinX,
+						blockMinY,
+						blockMinZ,
+						blockMaxX,
+						blockMaxY,
+						blockMaxZ,
+						2,
+						+1);
+				}
+
+				scratch.coarseVoxelsLOD[
+					(size_t)CoarseIndex(cx, cy, cz, coarseSX, coarseSY)] = cv;
 			}
 		}
 	}
@@ -610,8 +771,8 @@ static bool BuildCoarseChunkVoxels(
 	return true;
 }
 
-static uint8_t GetCoarseVoxel(
-	const std::vector<uint8_t>& voxels,
+static uint8_t GetCoarseSolidMaterial(
+	const std::vector<VW_CoarseVoxel>& voxels,
 	int sx,
 	int sy,
 	int sz,
@@ -625,7 +786,51 @@ static uint8_t GetCoarseVoxel(
 		return 0;
 	}
 
-	return voxels[(size_t)CoarseIndex(x, y, z, sx, sy)];
+	const VW_CoarseVoxel& v =
+		voxels[(size_t)CoarseIndex(x, y, z, sx, sy)];
+
+	if (!v.solid)
+		return 0;
+
+	return v.material;
+}
+
+static uint8_t GetCoarseFaceMaterial(
+	const std::vector<VW_CoarseVoxel>& voxels,
+	int sx,
+	int sy,
+	int sz,
+	int x,
+	int y,
+	int z,
+	int axis,
+	int sign)
+{
+	if (x < 0 || y < 0 || z < 0 ||
+		x >= sx || y >= sy || z >= sz)
+	{
+		return 0;
+	}
+
+	const VW_CoarseVoxel& v =
+		voxels[(size_t)CoarseIndex(x, y, z, sx, sy)];
+
+	if (!v.solid)
+		return 0;
+
+	uint8_t material = 0;
+
+	if (axis == 0)
+		material = sign < 0 ? v.faceNX : v.facePX;
+	else if (axis == 1)
+		material = sign < 0 ? v.faceNY : v.facePY;
+	else
+		material = sign < 0 ? v.faceNZ : v.facePZ;
+
+	if (material != 0)
+		return material;
+
+	return v.material;
 }
 
 static void AddGreedyQuadScaled(
@@ -1645,8 +1850,8 @@ static bool BuildChunkMeshLODCoarseGreedy(
 					aPos[vAxis] = y;
 					bPos[vAxis] = y;
 
-					const uint8_t a = GetCoarseVoxel(
-						scratch.coarseVoxels,
+					const uint8_t a = GetCoarseSolidMaterial(
+						scratch.coarseVoxelsLOD,
 						sx,
 						sy,
 						sz,
@@ -1654,8 +1859,8 @@ static bool BuildChunkMeshLODCoarseGreedy(
 						aPos[1],
 						aPos[2]);
 
-					const uint8_t b = GetCoarseVoxel(
-						scratch.coarseVoxels,
+					const uint8_t b = GetCoarseSolidMaterial(
+						scratch.coarseVoxelsLOD,
 						sx,
 						sy,
 						sz,
@@ -1688,14 +1893,16 @@ static bool BuildChunkMeshLODCoarseGreedy(
 							matPos[uAxis] = x;
 							matPos[vAxis] = y;
 
-							const uint8_t material = GetCoarseVoxel(
-								scratch.coarseVoxels,
+							const uint8_t material = GetCoarseFaceMaterial(
+								scratch.coarseVoxelsLOD,
 								sx,
 								sy,
 								sz,
 								matPos[0],
 								matPos[1],
-								matPos[2]);
+								matPos[2],
+								axis,
+								sign);
 
 							if (material == 0)
 							{
@@ -1718,14 +1925,16 @@ static bool BuildChunkMeshLODCoarseGreedy(
 								p[uAxis] = x + quadW;
 								p[vAxis] = y;
 
-								const uint8_t m = GetCoarseVoxel(
-									scratch.coarseVoxels,
+								const uint8_t m = GetCoarseFaceMaterial(
+									scratch.coarseVoxelsLOD,
 									sx,
 									sy,
 									sz,
 									p[0],
 									p[1],
-									p[2]);
+									p[2],
+									axis,
+									sign);
 
 								if (m != material)
 									break;
@@ -1755,14 +1964,16 @@ static bool BuildChunkMeshLODCoarseGreedy(
 									p[uAxis] = x + k;
 									p[vAxis] = y + quadH;
 
-									const uint8_t m = GetCoarseVoxel(
-										scratch.coarseVoxels,
+									const uint8_t m = GetCoarseFaceMaterial(
+										scratch.coarseVoxelsLOD,
 										sx,
 										sy,
 										sz,
 										p[0],
 										p[1],
-										p[2]);
+										p[2],
+										axis,
+										sign);
 
 									if (m != material)
 									{
@@ -2496,7 +2707,7 @@ extern "C"
 		scratch->indices.reserve(1536);
 		scratch->positiveRows.reserve(64);
 		scratch->negativeRows.reserve(64);
-		scratch->coarseVoxels.reserve(32 * 32 * 32);
+		scratch->coarseVoxelsLOD.reserve(32 * 32 * 32);
 
 		return scratch;
 	}
