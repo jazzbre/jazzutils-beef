@@ -119,6 +119,15 @@ extern "C" {
 		float radius,
 		uint8_t replacementMaterial);
 
+	using VW_DrillSphereCallback = uint8_t(*)(int x, int y, int z, uint8_t material, void* userData);
+	VW_API int VW_DrillSphereWithCallback(
+		VW_World* world,
+		float cx,
+		float cy,
+		float cz,
+		float radius,
+		VW_DrillSphereCallback callback, void* userData);
+
 	VW_API int VW_DrillCapsule(
 		VW_World* world,
 		VW_Vec3 a,

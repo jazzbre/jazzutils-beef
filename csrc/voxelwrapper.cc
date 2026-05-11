@@ -2449,6 +2449,104 @@ extern "C"
 		return changed;
 	}
 
+	VW_API int VW_DrillSphereWithCallback(
+		VW_World* world,
+		float cx,
+		float cy,
+		float cz,
+		float radius,
+		VW_DrillSphereCallback callback, void* userData)
+	{
+		if (!world || radius <= 0.0f)
+			return 0;
+
+		const int minX = std::max(0, (int)std::floor(cx - radius));
+		const int minY = std::max(0, (int)std::floor(cy - radius));
+		const int minZ = std::max(0, (int)std::floor(cz - radius));
+
+		const int maxX = std::min(world->sizeX - 1, (int)std::ceil(cx + radius));
+		const int maxY = std::min(world->sizeY - 1, (int)std::ceil(cy + radius));
+		const int maxZ = std::min(world->sizeZ - 1, (int)std::ceil(cz + radius));
+
+		const float r2 = radius * radius;
+		int changed = 0;
+
+		int changedMinX = world->sizeX;
+		int changedMinY = world->sizeY;
+		int changedMinZ = world->sizeZ;
+
+		int changedMaxX = -1;
+		int changedMaxY = -1;
+		int changedMaxZ = -1;
+
+		for (int z = minZ; z <= maxZ; z++)
+		{
+			const float pz = (float)z + 0.5f;
+			const float dz = pz - cz;
+			const float dz2 = dz * dz;
+
+			for (int y = minY; y <= maxY; y++)
+			{
+				const float py = (float)y + 0.5f;
+				const float dy = py - cy;
+				const float dy2 = dy * dy;
+
+				const float remaining = r2 - dz2 - dy2;
+
+				if (remaining < 0.0f)
+					continue;
+
+				const float xExtent = std::sqrt(remaining);
+
+				const int rowMinX = std::max(minX, (int)std::floor(cx - xExtent));
+				const int rowMaxX = std::min(maxX, (int)std::ceil(cx + xExtent));
+
+				for (int x = rowMinX; x <= rowMaxX; x++)
+				{
+					const float px = (float)x + 0.5f;
+					const float dx = px - cx;
+
+					if (dx * dx > remaining)
+						continue;
+
+					const uint8_t material = GetVoxelInternal(world, x, y, z);
+					const uint8_t replacementMaterial = callback(x, y, z, material, userData);
+
+					if (replacementMaterial == material) {
+						continue;
+					}
+
+					if (SetVoxelMaterialInternal(world, x, y, z, replacementMaterial))
+					{
+						changed++;
+
+						changedMinX = std::min(changedMinX, x);
+						changedMinY = std::min(changedMinY, y);
+						changedMinZ = std::min(changedMinZ, z);
+
+						changedMaxX = std::max(changedMaxX, x);
+						changedMaxY = std::max(changedMaxY, y);
+						changedMaxZ = std::max(changedMaxZ, z);
+					}
+				}
+			}
+		}
+
+		if (changed > 0)
+		{
+			MarkDirtyVoxelBounds(
+				world,
+				changedMinX,
+				changedMinY,
+				changedMinZ,
+				changedMaxX,
+				changedMaxY,
+				changedMaxZ);
+		}
+
+		return changed;
+	}
+
 	VW_API int VW_DrillCapsule(
 		VW_World* world,
 		VW_Vec3 a,

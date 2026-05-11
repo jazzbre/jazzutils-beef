@@ -90,6 +90,8 @@ namespace jazzutils
 
 		public struct VW_MeshBuildScratch;
 
+		public typealias VW_DrillSphereCallback = function uint8(int32 x, int32 y, int32 z, uint8 material, void* userData);
+
 		public static class VoxelNative
 		{
 			[CLink]
@@ -169,6 +171,15 @@ namespace jazzutils
 				float cz,
 				float radius,
 				uint8 replacementMaterial);
+
+			[CLink]
+			public static extern int32 VW_DrillSphereWithCallback(
+				void* world,
+				float cx,
+				float cy,
+				float cz,
+				float radius,
+				VW_DrillSphereCallback callback, void* userData);
 
 			[CLink]
 			public static extern int32 VW_DrillCapsule(
@@ -400,6 +411,19 @@ namespace jazzutils
 			public int32 DrillSphere(float cx, float cy, float cz, float radius, uint8 replacementMaterial = 0)
 			{
 				return VoxelNative.VW_DrillSphere(mHandle, cx, cy, cz, radius, replacementMaterial);
+			}
+
+			public typealias DrillSphereCallback = delegate uint8(int32 x, int32 y, int32 z, uint8 material);
+
+			private static uint8 DrillSphereCallbackFunction(int32 x, int32 y, int32 z, uint8 material, void* userData)
+			{
+				var callback = (DrillSphereCallback)Internal.UnsafeCastToObject(userData);
+				return callback(x, y, z, material);
+			}
+
+			public int32 DrillSphereWithCallback(void* world, float cx, float cy, float cz, float radius, DrillSphereCallback callback)
+			{
+				return VoxelNative.VW_DrillSphereWithCallback(world, cx, cy, cz, radius, => DrillSphereCallbackFunction, Internal.UnsafeCastToPtr(callback));
 			}
 
 			public int32 DrillCapsule(VW_Vec3 a, VW_Vec3 b, float radius, uint8 replacementMaterial = 0)
