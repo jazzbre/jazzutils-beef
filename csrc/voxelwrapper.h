@@ -178,6 +178,40 @@ extern "C" {
 	VW_API void VW_ClearMeshBuildScratch(
 		VW_MeshBuildScratch* scratch);
 
+	// Ray cast
+
+	typedef struct VW_RayCastHit
+	{
+		int hit;
+
+		int x;
+		int y;
+		int z;
+
+		uint8_t material;
+
+		float distance;
+
+		float positionX;
+		float positionY;
+		float positionZ;
+
+		int normalX;
+		int normalY;
+		int normalZ;
+	} VW_RayCastHit;
+
+	VW_API int VW_RayCast(
+		VW_World* world,
+		float originX,
+		float originY,
+		float originZ,
+		float dirX,
+		float dirY,
+		float dirZ,
+		float maxDistance,
+		VW_RayCastHit* outHit);
+
 #ifdef __cplusplus
 }
 #endif

@@ -2730,4 +2730,161 @@ extern "C"
 		scratch->negativeRows.clear();
 	}
 
+	static float AbsFloat(float v)
+	{
+		return v < 0.0f ? -v : v;
+	}
+
+	VW_API int VW_RayCast(
+		VW_World* world,
+		float originX,
+		float originY,
+		float originZ,
+		float dirX,
+		float dirY,
+		float dirZ,
+		float maxDistance,
+		VW_RayCastHit* outHit)
+	{
+		if (!world || !outHit || maxDistance <= 0.0f)
+			return 0;
+
+		std::memset(outHit, 0, sizeof(VW_RayCastHit));
+
+		const float dirLenSq = dirX * dirX + dirY * dirY + dirZ * dirZ;
+
+		if (dirLenSq <= 0.0000001f)
+			return 0;
+
+		const float invDirLen = 1.0f / std::sqrt(dirLenSq);
+
+		dirX *= invDirLen;
+		dirY *= invDirLen;
+		dirZ *= invDirLen;
+
+		int x = (int)std::floor(originX);
+		int y = (int)std::floor(originY);
+		int z = (int)std::floor(originZ);
+
+		const int stepX = dirX > 0.0f ? 1 : dirX < 0.0f ? -1 : 0;
+		const int stepY = dirY > 0.0f ? 1 : dirY < 0.0f ? -1 : 0;
+		const int stepZ = dirZ > 0.0f ? 1 : dirZ < 0.0f ? -1 : 0;
+
+		const float inf = 1.0e30f;
+
+		const float tDeltaX = stepX != 0 ? AbsFloat(1.0f / dirX) : inf;
+		const float tDeltaY = stepY != 0 ? AbsFloat(1.0f / dirY) : inf;
+		const float tDeltaZ = stepZ != 0 ? AbsFloat(1.0f / dirZ) : inf;
+
+		float nextBoundaryX = stepX > 0 ? (float)(x + 1) : (float)x;
+		float nextBoundaryY = stepY > 0 ? (float)(y + 1) : (float)y;
+		float nextBoundaryZ = stepZ > 0 ? (float)(z + 1) : (float)z;
+
+		float tMaxX = stepX != 0 ? (nextBoundaryX - originX) / dirX : inf;
+		float tMaxY = stepY != 0 ? (nextBoundaryY - originY) / dirY : inf;
+		float tMaxZ = stepZ != 0 ? (nextBoundaryZ - originZ) / dirZ : inf;
+
+		if (tMaxX < 0.0f)
+			tMaxX = 0.0f;
+
+		if (tMaxY < 0.0f)
+			tMaxY = 0.0f;
+
+		if (tMaxZ < 0.0f)
+			tMaxZ = 0.0f;
+
+		float travelled = 0.0f;
+
+		int normalX = 0;
+		int normalY = 0;
+		int normalZ = 0;
+
+		while (travelled <= maxDistance)
+		{
+			if (InBounds(world, x, y, z))
+			{
+				const uint8_t material = GetVoxelInternal(world, x, y, z);
+
+				if (material != 0)
+				{
+					outHit->hit = 1;
+					outHit->x = x;
+					outHit->y = y;
+					outHit->z = z;
+					outHit->material = material;
+					outHit->distance = travelled;
+
+					outHit->positionX = originX + dirX * travelled;
+					outHit->positionY = originY + dirY * travelled;
+					outHit->positionZ = originZ + dirZ * travelled;
+
+					outHit->normalX = normalX;
+					outHit->normalY = normalY;
+					outHit->normalZ = normalZ;
+
+					return 1;
+				}
+			}
+			else
+			{
+				// Optional fast-exit if ray has moved completely outside and is going away.
+				if ((x < 0 && stepX <= 0) || (x >= world->sizeX && stepX >= 0) ||
+					(y < 0 && stepY <= 0) || (y >= world->sizeY && stepY >= 0) ||
+					(z < 0 && stepZ <= 0) || (z >= world->sizeZ && stepZ >= 0))
+				{
+					return 0;
+				}
+			}
+
+			if (tMaxX < tMaxY)
+			{
+				if (tMaxX < tMaxZ)
+				{
+					x += stepX;
+					travelled = tMaxX;
+					tMaxX += tDeltaX;
+
+					normalX = -stepX;
+					normalY = 0;
+					normalZ = 0;
+				}
+				else
+				{
+					z += stepZ;
+					travelled = tMaxZ;
+					tMaxZ += tDeltaZ;
+
+					normalX = 0;
+					normalY = 0;
+					normalZ = -stepZ;
+				}
+			}
+			else
+			{
+				if (tMaxY < tMaxZ)
+				{
+					y += stepY;
+					travelled = tMaxY;
+					tMaxY += tDeltaY;
+
+					normalX = 0;
+					normalY = -stepY;
+					normalZ = 0;
+				}
+				else
+				{
+					z += stepZ;
+					travelled = tMaxZ;
+					tMaxZ += tDeltaZ;
+
+					normalX = 0;
+					normalY = 0;
+					normalZ = -stepZ;
+				}
+			}
+		}
+
+		return 0;
+	}
+
 }

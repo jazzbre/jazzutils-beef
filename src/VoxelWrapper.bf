@@ -66,6 +66,28 @@ namespace jazzutils
 			public int32 chunkLinearIndex;
 		}
 
+		[CRepr]
+		public struct VW_RayCastHit
+		{
+			public int32 hit;
+
+			public int32 x;
+			public int32 y;
+			public int32 z;
+
+			public uint8 material;
+
+			public float distance;
+
+			public float positionX;
+			public float positionY;
+			public float positionZ;
+
+			public int32 normalX;
+			public int32 normalY;
+			public int32 normalZ;
+		}
+
 		public struct VW_MeshBuildScratch;
 
 		public static class VoxelNative
@@ -218,6 +240,19 @@ namespace jazzutils
 				int32 lod,
 				VW_MeshBuildScratch* scratch,
 				VW_Mesh* outMesh);
+
+			[CLink]
+			public static extern int32 VW_RayCast(
+				void* world,
+				float originX,
+				float originY,
+				float originZ,
+				float dirX,
+				float dirY,
+				float dirZ,
+				float maxDistance,
+				VW_RayCastHit* outHit);
+
 		}
 
 		public class VoxelMeshBuildScratch
@@ -433,6 +468,30 @@ namespace jazzutils
 			public void ClearDirtyChunks()
 			{
 				VoxelNative.VW_ClearDirtyChunks(mHandle);
+			}
+
+			public bool RayCast(
+				float originX,
+				float originY,
+				float originZ,
+				float dirX,
+				float dirY,
+				float dirZ,
+				float maxDistance,
+				out VW_RayCastHit hit)
+			{
+				hit = default(VW_RayCastHit);
+
+				return VoxelNative.VW_RayCast(
+					mHandle,
+					originX,
+					originY,
+					originZ,
+					dirX,
+					dirY,
+					dirZ,
+					maxDistance,
+					&hit) != 0;
 			}
 		}
 	}
