@@ -221,6 +221,100 @@ extern "C" {
 		float maxDistance,
 		VW_RayCastHit* outHit);
 
+	typedef struct VW_CollisionVoxel
+	{
+		int x;
+		int y;
+		int z;
+
+		uint8_t material;
+
+		// Bit mask of exposed faces:
+		// bit 0 = +X
+		// bit 1 = -X
+		// bit 2 = +Y
+		// bit 3 = -Y
+		// bit 4 = +Z
+		// bit 5 = -Z
+		uint8_t exposedFaces;
+	} VW_CollisionVoxel;
+
+	VW_API int VW_CountCollisionVoxelsInChunk(
+		VW_World* world,
+		int chunkX,
+		int chunkY,
+		int chunkZ);
+
+	VW_API int VW_GetCollisionVoxelsInChunk(
+		VW_World* world,
+		int chunkX,
+		int chunkY,
+		int chunkZ,
+		VW_CollisionVoxel* outVoxels,
+		int maxVoxels);
+
+	typedef struct VW_PackedQuad
+	{
+		// Packed integer voxel-space data:
+		//
+		// bits  0..5   = x
+		// bits  6..11  = y
+		// bits 12..17  = z
+		// bits 18..23  = width
+		// bits 24..29  = height
+		// bits 30..31  = axis
+		uint32_t data0;
+
+		// bits  0..7   = material
+		// bits  8..9   = sign encoded: 0 = negative, 1 = positive
+		// bits 10..31  = reserved
+		uint32_t data1;
+	} VW_PackedQuad;
+
+	typedef struct VW_PackedQuadMesh
+	{
+		VW_PackedQuad* quads;
+		uint32_t quadCount;
+
+		int chunkX;
+		int chunkY;
+		int chunkZ;
+		int chunkLinearIndex;
+	} VW_PackedQuadMesh;
+
+	VW_API int VW_BuildChunkPackedQuadsLODWithScratch(
+		VW_World* world,
+		int chunkX,
+		int chunkY,
+		int chunkZ,
+		int lod,
+		VW_MeshBuildScratch* scratch,
+		VW_PackedQuadMesh* outMesh);
+
+	VW_API int VW_BuildChunkPackedQuadsWithScratch(
+		VW_World* world,
+		int chunkX,
+		int chunkY,
+		int chunkZ,
+		VW_MeshBuildScratch* scratch,
+		VW_PackedQuadMesh* outMesh);
+
+	VW_API int VW_BuildDirtyChunkPackedQuadsLODWithScratch(
+		VW_World* world,
+		int dirtyIndex,
+		int lod,
+		VW_MeshBuildScratch* scratch,
+		VW_PackedQuadMesh* outMesh);
+
+	VW_API int VW_BuildDirtyChunkPackedQuadsWithScratch(
+		VW_World* world,
+		int dirtyIndex,
+		VW_MeshBuildScratch* scratch,
+		VW_PackedQuadMesh* outMesh);
+
+	VW_API void VW_FreePackedQuadMesh(
+		VW_PackedQuadMesh* mesh);
+
 #ifdef __cplusplus
 }
 #endif

@@ -49,9 +49,11 @@ struct VW_MeshBuildScratch
 	std::vector<VW_Vertex> vertices;
 	std::vector<uint32_t> indices;
 
+	std::vector<VW_PackedQuad> packedQuads;
+
 	std::vector<uint64_t> positiveRows;
 	std::vector<uint64_t> negativeRows;
-	// Used for LOD > 0.
+
 	std::vector<VW_CoarseVoxel> coarseVoxelsLOD;
 };
 
@@ -1305,6 +1307,186 @@ static void AddGreedyQuad(
 	}
 }
 
+static uint32_t PackClamp6(int v)
+{
+	if (v < 0)
+		return 0;
+
+	if (v > 63)
+		return 63;
+
+	return (uint32_t)v;
+}
+
+static void AddPackedGreedyQuad(
+	std::vector<VW_PackedQuad>& quads,
+	int axis,
+	int sign,
+	int plane,
+	int u0,
+	int v0,
+	int width,
+	int height,
+	uint8_t material,
+	int chunkBaseX,
+	int chunkBaseY,
+	int chunkBaseZ)
+{
+	const int uAxis = (axis + 1) % 3;
+	const int vAxis = (axis + 2) % 3;
+
+	int p[3] = { 0, 0, 0 };
+
+	p[axis] = plane;
+	p[uAxis] = u0;
+	p[vAxis] = v0;
+
+	// Store chunk-local coordinates.
+	const int lx = p[0] - chunkBaseX;
+	const int ly = p[1] - chunkBaseY;
+	const int lz = p[2] - chunkBaseZ;
+
+	VW_PackedQuad q = {};
+
+	q.data0 =
+		(PackClamp6(lx) << 0) |
+		(PackClamp6(ly) << 6) |
+		(PackClamp6(lz) << 12) |
+		(PackClamp6(width) << 18) |
+		(PackClamp6(height) << 24) |
+		(((uint32_t)axis & 3u) << 30);
+
+	const uint32_t signBit = sign > 0 ? 1u : 0u;
+
+	q.data1 =
+		((uint32_t)material) |
+		(signBit << 8);
+
+	quads.push_back(q);
+}
+
+static void ConsumeBitGreedyFaceRowsPacked(
+	VW_World* w,
+	std::vector<VW_PackedQuad>& outQuads,
+	std::vector<uint64_t>& faceRows,
+	int axis,
+	int sign,
+	int plane,
+	int uAxis,
+	int vAxis,
+	int uMin,
+	int vMin,
+	int maskW,
+	int maskH,
+	int chunkBaseX,
+	int chunkBaseY,
+	int chunkBaseZ)
+{
+	for (int y = 0; y < maskH; y++)
+	{
+		while (faceRows[(size_t)y] != 0ull)
+		{
+			const uint64_t row = faceRows[(size_t)y];
+			const int x = CountTrailingZeros64(row);
+
+			const int u0 = uMin + x;
+			const int v0 = vMin + y;
+
+			const uint8_t material = GetFaceMaterial(
+				w,
+				axis,
+				sign,
+				plane,
+				uAxis,
+				vAxis,
+				u0,
+				v0);
+
+			if (material == 0)
+			{
+				faceRows[(size_t)y] &= ~(1ull << x);
+				continue;
+			}
+
+			int quadW = 1;
+
+			while (x + quadW < maskW)
+			{
+				const uint64_t bit = 1ull << (x + quadW);
+
+				if ((faceRows[(size_t)y] & bit) == 0ull)
+					break;
+
+				const uint8_t m = GetFaceMaterial(
+					w,
+					axis,
+					sign,
+					plane,
+					uAxis,
+					vAxis,
+					uMin + x + quadW,
+					v0);
+
+				if (m != material)
+					break;
+
+				quadW++;
+			}
+
+			const uint64_t quadMask =
+				quadW >= 64
+				? ~0ull
+				: (((1ull << quadW) - 1ull) << x);
+
+			int quadH = 1;
+
+			while (y + quadH < maskH)
+			{
+				const uint64_t nextRow = faceRows[(size_t)(y + quadH)];
+
+				if ((nextRow & quadMask) != quadMask)
+					break;
+
+				const int nextV = vMin + y + quadH;
+
+				if (!FaceRunHasMaterial(
+					w,
+					axis,
+					sign,
+					plane,
+					uAxis,
+					vAxis,
+					u0,
+					nextV,
+					quadW,
+					material))
+				{
+					break;
+				}
+
+				quadH++;
+			}
+
+			for (int yy = 0; yy < quadH; yy++)
+				faceRows[(size_t)(y + yy)] &= ~quadMask;
+
+			AddPackedGreedyQuad(
+				outQuads,
+				axis,
+				sign,
+				plane,
+				u0,
+				v0,
+				quadW,
+				quadH,
+				material,
+				chunkBaseX,
+				chunkBaseY,
+				chunkBaseZ);
+		}
+	}
+}
+
 static void ConsumeBitGreedyFaceRows(
 	VW_World* w,
 	std::vector<VW_Vertex>& outVertices,
@@ -1421,6 +1603,46 @@ static void ConsumeBitGreedyFaceRows(
 				material);
 		}
 	}
+}
+
+static void AddPackedGreedyQuadScaled(
+	std::vector<VW_PackedQuad>& quads,
+	int axis,
+	int sign,
+	int plane,
+	int u0,
+	int v0,
+	int width,
+	int height,
+	uint8_t material,
+	int scale)
+{
+	const int uAxis = (axis + 1) % 3;
+	const int vAxis = (axis + 2) % 3;
+
+	int p[3] = { 0, 0, 0 };
+
+	p[axis] = plane * scale;
+	p[uAxis] = u0 * scale;
+	p[vAxis] = v0 * scale;
+
+	VW_PackedQuad q = {};
+
+	q.data0 =
+		(PackClamp6(p[0]) << 0) |
+		(PackClamp6(p[1]) << 6) |
+		(PackClamp6(p[2]) << 12) |
+		(PackClamp6(width * scale) << 18) |
+		(PackClamp6(height * scale) << 24) |
+		(((uint32_t)axis & 3u) << 30);
+
+	const uint32_t signBit = sign > 0 ? 1u : 0u;
+
+	q.data1 =
+		((uint32_t)material) |
+		(signBit << 8);
+
+	quads.push_back(q);
 }
 
 static int GetChunkActualSizeX(const VW_World* w, int chunkX)
@@ -1573,6 +1795,42 @@ static bool IsFullSolidChunkFullyHidden(
 	return true;
 }
 
+static int FillOutPackedQuadMeshFromScratch(
+	VW_MeshBuildScratch* scratch,
+	int chunkX,
+	int chunkY,
+	int chunkZ,
+	int chunkIndex,
+	VW_PackedQuadMesh* outMesh)
+{
+	if (!scratch || !outMesh)
+		return 0;
+
+	std::vector<VW_PackedQuad>& quads = scratch->packedQuads;
+
+	outMesh->chunkX = chunkX;
+	outMesh->chunkY = chunkY;
+	outMesh->chunkZ = chunkZ;
+	outMesh->chunkLinearIndex = chunkIndex;
+	outMesh->quadCount = (uint32_t)quads.size();
+
+	if (!quads.empty())
+	{
+		const size_t bytes = quads.size() * sizeof(VW_PackedQuad);
+		outMesh->quads = (VW_PackedQuad*)std::malloc(bytes);
+
+		if (!outMesh->quads)
+		{
+			std::memset(outMesh, 0, sizeof(VW_PackedQuadMesh));
+			return 0;
+		}
+
+		std::memcpy(outMesh->quads, quads.data(), bytes);
+	}
+
+	return 1;
+}
+
 static int FillOutMeshFromScratch(
 	VW_MeshBuildScratch* scratch,
 	int chunkX,
@@ -1625,6 +1883,155 @@ static int FillOutMeshFromScratch(
 	}
 
 	return 1;
+}
+
+static bool BuildChunkPackedQuadsBitGreedy(
+	VW_World* w,
+	ChunkCoordInternal c,
+	VW_MeshBuildScratch& scratch)
+{
+	scratch.packedQuads.clear();
+
+	if (!w)
+		return false;
+
+	if (w->chunkSize > 64)
+		return false;
+
+	const int chunkIndex = ChunkLinearIndex(w, c.x, c.y, c.z);
+
+	if (chunkIndex < 0)
+		return false;
+
+	const VW_Chunk& chunk = w->chunks[(size_t)chunkIndex];
+
+	if (chunk.solidVoxelCount == 0)
+		return true;
+
+	if (IsFullSolidChunkFullyHidden(w, c.x, c.y, c.z))
+		return true;
+
+	const int cs = w->chunkSize;
+
+	int minCoord[3];
+	int maxCoord[3];
+
+	minCoord[0] = c.x * cs;
+	minCoord[1] = c.y * cs;
+	minCoord[2] = c.z * cs;
+
+	maxCoord[0] = std::min(minCoord[0] + cs, w->sizeX);
+	maxCoord[1] = std::min(minCoord[1] + cs, w->sizeY);
+	maxCoord[2] = std::min(minCoord[2] + cs, w->sizeZ);
+
+	if (minCoord[0] >= maxCoord[0] ||
+		minCoord[1] >= maxCoord[1] ||
+		minCoord[2] >= maxCoord[2])
+	{
+		return false;
+	}
+
+	if (scratch.packedQuads.capacity() < 1024)
+		scratch.packedQuads.reserve(1024);
+
+	for (int axis = 0; axis < 3; axis++)
+	{
+		const int uAxis = (axis + 1) % 3;
+		const int vAxis = (axis + 2) % 3;
+
+		const int uMin = minCoord[uAxis];
+		const int vMin = minCoord[vAxis];
+
+		const int uMax = maxCoord[uAxis];
+		const int vMax = maxCoord[vAxis];
+
+		const int maskW = uMax - uMin;
+		const int maskH = vMax - vMin;
+
+		if (maskW <= 0 || maskH <= 0 || maskW > 64)
+			continue;
+
+		const uint64_t validMask = MakeLowBitsMask(maskW);
+
+		scratch.positiveRows.resize((size_t)maskH);
+		scratch.negativeRows.resize((size_t)maskH);
+
+		std::vector<uint64_t>& positiveRows = scratch.positiveRows;
+		std::vector<uint64_t>& negativeRows = scratch.negativeRows;
+
+		for (int plane = minCoord[axis]; plane <= maxCoord[axis]; plane++)
+		{
+			for (int y = 0; y < maskH; y++)
+			{
+				const int vCoord = vMin + y;
+
+				const uint64_t before = BuildOccupancyRowCached(
+					w,
+					c,
+					minCoord,
+					maxCoord,
+					axis,
+					plane - 1,
+					uAxis,
+					vAxis,
+					uMin,
+					vCoord,
+					maskW);
+
+				const uint64_t after = BuildOccupancyRowCached(
+					w,
+					c,
+					minCoord,
+					maxCoord,
+					axis,
+					plane,
+					uAxis,
+					vAxis,
+					uMin,
+					vCoord,
+					maskW);
+
+				positiveRows[(size_t)y] = (before & ~after) & validMask;
+				negativeRows[(size_t)y] = (~before & after) & validMask;
+			}
+
+			ConsumeBitGreedyFaceRowsPacked(
+				w,
+				scratch.packedQuads,
+				positiveRows,
+				axis,
+				+1,
+				plane,
+				uAxis,
+				vAxis,
+				uMin,
+				vMin,
+				maskW,
+				maskH,
+				minCoord[0],
+				minCoord[1],
+				minCoord[2]);
+
+			ConsumeBitGreedyFaceRowsPacked(
+				w,
+				scratch.packedQuads,
+				negativeRows,
+				axis,
+				-1,
+				plane,
+				uAxis,
+				vAxis,
+				uMin,
+				vMin,
+				maskW,
+				maskH,
+				minCoord[0],
+				minCoord[1],
+				minCoord[2]);
+		}
+	}
+
+	return true;
 }
 
 static bool BuildChunkMeshBitGreedy(
@@ -2179,6 +2586,38 @@ static int DrillCapsuleAirFast(
 	}
 
 	return changed;
+}
+
+static uint8_t GetExposedFaceMask(
+	const VW_World* w,
+	int x,
+	int y,
+	int z)
+{
+	if (GetVoxelInternal(w, x, y, z) == 0)
+		return 0;
+
+	uint8_t mask = 0;
+
+	if (GetVoxelInternal(w, x + 1, y, z) == 0)
+		mask |= 1 << 0; // +X
+
+	if (GetVoxelInternal(w, x - 1, y, z) == 0)
+		mask |= 1 << 1; // -X
+
+	if (GetVoxelInternal(w, x, y + 1, z) == 0)
+		mask |= 1 << 2; // +Y
+
+	if (GetVoxelInternal(w, x, y - 1, z) == 0)
+		mask |= 1 << 3; // -Y
+
+	if (GetVoxelInternal(w, x, y, z + 1) == 0)
+		mask |= 1 << 4; // +Z
+
+	if (GetVoxelInternal(w, x, y, z - 1) == 0)
+		mask |= 1 << 5; // -Z
+
+	return mask;
 }
 
 extern "C"
@@ -2803,6 +3242,7 @@ extern "C"
 
 		scratch->vertices.reserve(1024);
 		scratch->indices.reserve(1536);
+		scratch->packedQuads.reserve(1024);
 		scratch->positiveRows.reserve(64);
 		scratch->negativeRows.reserve(64);
 		scratch->coarseVoxelsLOD.reserve(32 * 32 * 32);
@@ -2824,6 +3264,7 @@ extern "C"
 
 		scratch->vertices.clear();
 		scratch->indices.clear();
+		scratch->packedQuads.clear();
 		scratch->positiveRows.clear();
 		scratch->negativeRows.clear();
 	}
@@ -2985,4 +3426,251 @@ extern "C"
 		return 0;
 	}
 
+	VW_API int VW_CountCollisionVoxelsInChunk(
+		VW_World* world,
+		int chunkX,
+		int chunkY,
+		int chunkZ)
+	{
+		if (!world)
+			return 0;
+
+		const int chunkIndex = ChunkLinearIndex(world, chunkX, chunkY, chunkZ);
+
+		if (chunkIndex < 0)
+			return 0;
+
+		const VW_Chunk& chunk = world->chunks[(size_t)chunkIndex];
+
+		if (chunk.solidVoxelCount == 0)
+			return 0;
+
+		const int cs = world->chunkSize;
+
+		const int minX = chunkX * cs;
+		const int minY = chunkY * cs;
+		const int minZ = chunkZ * cs;
+
+		const int maxX = std::min(minX + cs, world->sizeX);
+		const int maxY = std::min(minY + cs, world->sizeY);
+		const int maxZ = std::min(minZ + cs, world->sizeZ);
+
+		int count = 0;
+
+		for (int z = minZ; z < maxZ; z++)
+		{
+			for (int y = minY; y < maxY; y++)
+			{
+				for (int x = minX; x < maxX; x++)
+				{
+					const uint8_t material = GetVoxelInternal(world, x, y, z);
+
+					if (material == 0)
+						continue;
+
+					const uint8_t exposedFaces = GetExposedFaceMask(world, x, y, z);
+
+					if (exposedFaces != 0)
+						count++;
+				}
+			}
+		}
+
+		return count;
+	}
+
+	VW_API int VW_GetCollisionVoxelsInChunk(
+		VW_World* world,
+		int chunkX,
+		int chunkY,
+		int chunkZ,
+		VW_CollisionVoxel* outVoxels,
+		int maxVoxels)
+	{
+		if (!world || !outVoxels || maxVoxels <= 0)
+			return 0;
+
+		const int chunkIndex = ChunkLinearIndex(world, chunkX, chunkY, chunkZ);
+
+		if (chunkIndex < 0)
+			return 0;
+
+		const VW_Chunk& chunk = world->chunks[(size_t)chunkIndex];
+
+		if (chunk.solidVoxelCount == 0)
+			return 0;
+
+		const int cs = world->chunkSize;
+
+		const int minX = chunkX * cs;
+		const int minY = chunkY * cs;
+		const int minZ = chunkZ * cs;
+
+		const int maxX = std::min(minX + cs, world->sizeX);
+		const int maxY = std::min(minY + cs, world->sizeY);
+		const int maxZ = std::min(minZ + cs, world->sizeZ);
+
+		int written = 0;
+
+		for (int z = minZ; z < maxZ; z++)
+		{
+			for (int y = minY; y < maxY; y++)
+			{
+				for (int x = minX; x < maxX; x++)
+				{
+					const uint8_t material = GetVoxelInternal(world, x, y, z);
+
+					if (material == 0)
+						continue;
+
+					const uint8_t exposedFaces = GetExposedFaceMask(world, x, y, z);
+
+					if (exposedFaces == 0)
+						continue;
+
+					if (written >= maxVoxels)
+						return written;
+
+					VW_CollisionVoxel voxel;
+					voxel.x = x;
+					voxel.y = y;
+					voxel.z = z;
+					voxel.material = material;
+					voxel.exposedFaces = exposedFaces;
+
+					outVoxels[written] = voxel;
+					written++;
+				}
+			}
+		}
+
+		return written;
+	}
+
+	VW_API int VW_BuildChunkPackedQuadsLODWithScratch(
+		VW_World* world,
+		int chunkX,
+		int chunkY,
+		int chunkZ,
+		int lod,
+		VW_MeshBuildScratch* scratch,
+		VW_PackedQuadMesh* outMesh)
+	{
+		if (!world || !scratch || !outMesh)
+			return 0;
+
+		if (lod < 0)
+			lod = 0;
+
+		const int chunkIndex = ChunkLinearIndex(world, chunkX, chunkY, chunkZ);
+
+		if (chunkIndex < 0)
+			return 0;
+
+		std::memset(outMesh, 0, sizeof(VW_PackedQuadMesh));
+
+		ChunkCoordInternal c;
+		c.x = chunkX;
+		c.y = chunkY;
+		c.z = chunkZ;
+
+		bool ok = false;
+
+		if (lod == 0)
+		{
+			ok = BuildChunkPackedQuadsBitGreedy(world, c, *scratch);
+		}
+		else
+		{
+			// Add packed LOD path later.
+			// For now, either return 0 or build normal LOD mesh.
+			ok = BuildChunkPackedQuadsBitGreedy(world, c, *scratch);
+		}
+
+		if (!ok)
+			return 0;
+
+		return FillOutPackedQuadMeshFromScratch(
+			scratch,
+			chunkX,
+			chunkY,
+			chunkZ,
+			chunkIndex,
+			outMesh);
+	}
+
+	VW_API int VW_BuildChunkPackedQuadsWithScratch(
+		VW_World* world,
+		int chunkX,
+		int chunkY,
+		int chunkZ,
+		VW_MeshBuildScratch* scratch,
+		VW_PackedQuadMesh* outMesh)
+	{
+		return VW_BuildChunkPackedQuadsLODWithScratch(
+			world,
+			chunkX,
+			chunkY,
+			chunkZ,
+			0,
+			scratch,
+			outMesh);
+	}
+
+	VW_API int VW_BuildDirtyChunkPackedQuadsLODWithScratch(
+		VW_World* world,
+		int dirtyIndex,
+		int lod,
+		VW_MeshBuildScratch* scratch,
+		VW_PackedQuadMesh* outMesh)
+	{
+		if (!world || !scratch || !outMesh)
+			return 0;
+
+		if (dirtyIndex < 0 || dirtyIndex >= (int)world->dirtyChunkIndices.size())
+			return 0;
+
+		const int chunkIndex = world->dirtyChunkIndices[(size_t)dirtyIndex];
+		const ChunkCoordInternal c = ChunkCoordFromLinearIndex(world, chunkIndex);
+
+		return VW_BuildChunkPackedQuadsLODWithScratch(
+			world,
+			c.x,
+			c.y,
+			c.z,
+			lod,
+			scratch,
+			outMesh);
+	}
+
+	VW_API int VW_BuildDirtyChunkPackedQuadsWithScratch(
+		VW_World* world,
+		int dirtyIndex,
+		VW_MeshBuildScratch* scratch,
+		VW_PackedQuadMesh* outMesh)
+	{
+		return VW_BuildDirtyChunkPackedQuadsLODWithScratch(
+			world,
+			dirtyIndex,
+			0,
+			scratch,
+			outMesh);
+	}
+
+	VW_API void VW_FreePackedQuadMesh(
+		VW_PackedQuadMesh* mesh)
+	{
+		if (!mesh)
+			return;
+
+		std::free(mesh->quads);
+
+		mesh->quads = nullptr;
+		mesh->quadCount = 0;
+
+		mesh->chunkX = 0;
+		mesh->chunkY = 0;
+		mesh->chunkZ = 0;
+		mesh->chunkLinearIndex = -1;
+	}
 }
