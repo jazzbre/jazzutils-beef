@@ -274,6 +274,7 @@ extern "C" {
 	// Return non-zero to continue visiting, 0 to stop.
 	using VW_CollisionVoxelVisitor = int(*)(int x, int y, int z, uint8_t material, uint8_t exposedFaces, void* userData);
 	using VW_CollisionVoxelRangeFilter = int(*)(int minX, int minY, int minZ, int maxX, int maxY, int maxZ, void* userData);
+	using VW_CollisionVoxelRangeVisitor = int(*)(int minX, int minY, int minZ, int maxX, int maxY, int maxZ, void* userData);
 
 	// Visits collision voxels in [min, max) voxel coordinates.
 	VW_API int VW_VisitCollisionVoxelsInRange(
@@ -315,6 +316,22 @@ extern "C" {
 		VW_CollisionVoxelRangeFilter rangeFilter,
 		void* rangeFilterUserData,
 		VW_CollisionVoxelVisitor visitor,
+		void* userData);
+
+	// Visits occupied collision voxel ranges in [min, max). Ranges are contiguous
+	// x-axis spans on a single y/z row.
+	VW_API int VW_VisitCollisionVoxelRangesInRangeWithExposedFacesAndRangeFilter(
+		VW_World* world,
+		int minX,
+		int minY,
+		int minZ,
+		int maxX,
+		int maxY,
+		int maxZ,
+		uint8_t requiredExposedFaces,
+		VW_CollisionVoxelRangeFilter rangeFilter,
+		void* rangeFilterUserData,
+		VW_CollisionVoxelRangeVisitor visitor,
 		void* userData);
 
 	// Visits collision voxels in chunks touched by a swept axis-aligned voxel-space box.

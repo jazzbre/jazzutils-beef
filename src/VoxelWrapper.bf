@@ -785,6 +785,7 @@ namespace jazzutils
 		public typealias VW_DrillSphereCallback = function uint8(int32 x, int32 y, int32 z, uint8 material, void* userData);
 		public typealias VW_CollisionVoxelVisitor = function int32(int32 x, int32 y, int32 z, uint8 material, uint8 exposedFaces, void* userData);
 		public typealias VW_CollisionVoxelRangeFilter = function int32(int32 minX, int32 minY, int32 minZ, int32 maxX, int32 maxY, int32 maxZ, void* userData);
+		public typealias VW_CollisionVoxelRangeVisitor = function int32(int32 minX, int32 minY, int32 minZ, int32 maxX, int32 maxY, int32 maxZ, void* userData);
 
 		public static class VoxelNative
 		{
@@ -1033,6 +1034,21 @@ namespace jazzutils
 				VW_CollisionVoxelRangeFilter rangeFilter,
 				void* rangeFilterUserData,
 				VW_CollisionVoxelVisitor visitor,
+				void* userData);
+
+			[CLink]
+			public static extern int32 VW_VisitCollisionVoxelRangesInRangeWithExposedFacesAndRangeFilter(
+				void* world,
+				int32 minX,
+				int32 minY,
+				int32 minZ,
+				int32 maxX,
+				int32 maxY,
+				int32 maxZ,
+				uint8 requiredExposedFaces,
+				VW_CollisionVoxelRangeFilter rangeFilter,
+				void* rangeFilterUserData,
+				VW_CollisionVoxelRangeVisitor visitor,
 				void* userData);
 
 			[CLink]
@@ -1442,6 +1458,34 @@ namespace jazzutils
 				void* userData)
 			{
 				return VoxelNative.VW_VisitCollisionVoxelsInRangeWithExposedFacesAndRangeFilter(
+					mHandle,
+					minX,
+					minY,
+					minZ,
+					maxX,
+					maxY,
+					maxZ,
+					requiredExposedFaces,
+					rangeFilter,
+					rangeFilterUserData,
+					visitor,
+					userData);
+			}
+
+			public int32 VisitCollisionVoxelRangesInRangeWithExposedFacesAndRangeFilter(
+				int32 minX,
+				int32 minY,
+				int32 minZ,
+				int32 maxX,
+				int32 maxY,
+				int32 maxZ,
+				uint8 requiredExposedFaces,
+				VW_CollisionVoxelRangeFilter rangeFilter,
+				void* rangeFilterUserData,
+				VW_CollisionVoxelRangeVisitor visitor,
+				void* userData)
+			{
+				return VoxelNative.VW_VisitCollisionVoxelRangesInRangeWithExposedFacesAndRangeFilter(
 					mHandle,
 					minX,
 					minY,

@@ -2735,6 +2735,142 @@ static int VisitCollisionVoxelsInRangeInternal(
 	return visited;
 }
 
+static bool IsCollisionVoxelAccepted(
+	VW_World* world,
+	int x,
+	int y,
+	int z,
+	uint8_t requiredExposedFaces)
+{
+	const uint8_t material = world->voxels[(size_t)VoxelIndex(world, x, y, z)];
+	if (material == 0)
+		return false;
+
+	const uint8_t exposedFaces = GetExposedFaceMask(world, x, y, z);
+	return exposedFaces != 0 && (requiredExposedFaces == 0 || (exposedFaces & requiredExposedFaces) != 0);
+}
+
+static int VisitCollisionVoxelRangesInRangeInternal(
+	VW_World* world,
+	int minX,
+	int minY,
+	int minZ,
+	int maxX,
+	int maxY,
+	int maxZ,
+	uint8_t requiredExposedFaces,
+	VW_CollisionVoxelRangeFilter rangeFilter,
+	void* rangeFilterUserData,
+	VW_CollisionVoxelRangeVisitor visitor,
+	void* userData)
+{
+	if (!world || !visitor)
+		return 0;
+
+	minX = std::max(0, std::min(minX, world->sizeX));
+	minY = std::max(0, std::min(minY, world->sizeY));
+	minZ = std::max(0, std::min(minZ, world->sizeZ));
+	maxX = std::max(0, std::min(maxX, world->sizeX));
+	maxY = std::max(0, std::min(maxY, world->sizeY));
+	maxZ = std::max(0, std::min(maxZ, world->sizeZ));
+
+	if (minX >= maxX || minY >= maxY || minZ >= maxZ)
+		return 0;
+
+	const int cs = world->chunkSize;
+	const int minChunkX = minX / cs;
+	const int minChunkY = minY / cs;
+	const int minChunkZ = minZ / cs;
+	const int maxChunkX = (maxX - 1) / cs;
+	const int maxChunkY = (maxY - 1) / cs;
+	const int maxChunkZ = (maxZ - 1) / cs;
+
+	int visited = 0;
+
+	for (int chunkZ = minChunkZ; chunkZ <= maxChunkZ; chunkZ++)
+	{
+		const int chunkMinZ = chunkZ * cs;
+		const int startZ = std::max(minZ, chunkMinZ);
+		const int endZ = std::min(maxZ, std::min(chunkMinZ + cs, world->sizeZ));
+
+		for (int chunkY = minChunkY; chunkY <= maxChunkY; chunkY++)
+		{
+			const int chunkMinY = chunkY * cs;
+			const int startY = std::max(minY, chunkMinY);
+			const int endY = std::min(maxY, std::min(chunkMinY + cs, world->sizeY));
+
+			for (int chunkX = minChunkX; chunkX <= maxChunkX; chunkX++)
+			{
+				const int chunkIndex = ChunkLinearIndex(world, chunkX, chunkY, chunkZ);
+				if (chunkIndex < 0)
+					continue;
+
+				const VW_Chunk& chunk = world->chunks[(size_t)chunkIndex];
+				if (chunk.solidVoxelCount == 0)
+					continue;
+
+				const int chunkMinX = chunkX * cs;
+				const int startX = std::max(minX, chunkMinX);
+				const int endX = std::min(maxX, std::min(chunkMinX + cs, world->sizeX));
+				if (rangeFilter && !rangeFilter(startX, startY, startZ, endX, endY, endZ, rangeFilterUserData))
+					continue;
+
+				const int localStartX = startX - chunkMinX;
+				const int localEndX = endX - chunkMinX;
+				const uint64_t xMask = MakeLowBitsMask(localEndX - localStartX) << localStartX;
+
+				for (int z = startZ; z < endZ; z++)
+				{
+					const int lz = z - chunkMinZ;
+
+					for (int y = startY; y < endY; y++)
+					{
+						if (rangeFilter && !rangeFilter(startX, y, z, endX, y + 1, z + 1, rangeFilterUserData))
+							continue;
+
+						const int ly = y - chunkMinY;
+						uint64_t row = chunk.occupancyX[(size_t)(lz * cs + ly)] & xMask;
+
+						while (row != 0)
+						{
+							const int lx = CountTrailingZeros64(row);
+							const int x = chunkMinX + lx;
+
+							if (!IsCollisionVoxelAccepted(world, x, y, z, requiredExposedFaces))
+							{
+								row &= row - 1;
+								continue;
+							}
+
+							int endRunX = x + 1;
+							while (endRunX < endX)
+							{
+								const int nextLX = endRunX - chunkMinX;
+								if ((row & (uint64_t(1) << nextLX)) == 0 || !IsCollisionVoxelAccepted(world, endRunX, y, z, requiredExposedFaces))
+									break;
+
+								endRunX++;
+							}
+
+							const uint64_t runMask = MakeLowBitsMask(endRunX - x) << lx;
+							row &= ~runMask;
+
+							if (rangeFilter && !rangeFilter(x, y, z, endRunX, y + 1, z + 1, rangeFilterUserData))
+								continue;
+
+							visited++;
+							if (!visitor(x, y, z, endRunX, y + 1, z + 1, userData))
+								return visited;
+						}
+					}
+				}
+			}
+		}
+	}
+
+	return visited;
+}
+
 extern "C"
 {
 
@@ -3765,6 +3901,35 @@ extern "C"
 		void* userData)
 	{
 		return VisitCollisionVoxelsInRangeInternal(
+			world,
+			minX,
+			minY,
+			minZ,
+			maxX,
+			maxY,
+			maxZ,
+			requiredExposedFaces,
+			rangeFilter,
+			rangeFilterUserData,
+			visitor,
+			userData);
+	}
+
+	VW_API int VW_VisitCollisionVoxelRangesInRangeWithExposedFacesAndRangeFilter(
+		VW_World* world,
+		int minX,
+		int minY,
+		int minZ,
+		int maxX,
+		int maxY,
+		int maxZ,
+		uint8_t requiredExposedFaces,
+		VW_CollisionVoxelRangeFilter rangeFilter,
+		void* rangeFilterUserData,
+		VW_CollisionVoxelRangeVisitor visitor,
+		void* userData)
+	{
+		return VisitCollisionVoxelRangesInRangeInternal(
 			world,
 			minX,
 			minY,
