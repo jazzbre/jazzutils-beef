@@ -783,6 +783,8 @@ namespace jazzutils
 		public struct VW_MeshBuildScratch;
 
 		public typealias VW_DrillSphereCallback = function uint8(int32 x, int32 y, int32 z, uint8 material, void* userData);
+		public typealias VW_CollisionVoxelVisitor = function int32(int32 x, int32 y, int32 z, uint8 material, uint8 exposedFaces, void* userData);
+		public typealias VW_CollisionVoxelRangeFilter = function int32(int32 minX, int32 minY, int32 minZ, int32 maxX, int32 maxY, int32 maxZ, void* userData);
 
 		public static class VoxelNative
 		{
@@ -835,6 +837,27 @@ namespace jazzutils
 
 			[CLink]
 			public static extern int32 VW_GetChunkLinearIndex(
+				void* world,
+				int32 chunkX,
+				int32 chunkY,
+				int32 chunkZ);
+
+			[CLink]
+			public static extern int32 VW_GetChunkSolidVoxelCount(
+				void* world,
+				int32 chunkX,
+				int32 chunkY,
+				int32 chunkZ);
+
+			[CLink]
+			public static extern int32 VW_IsChunkEmpty(
+				void* world,
+				int32 chunkX,
+				int32 chunkY,
+				int32 chunkZ);
+
+			[CLink]
+			public static extern uint32 VW_GetChunkVersion(
 				void* world,
 				int32 chunkX,
 				int32 chunkY,
@@ -971,6 +994,62 @@ namespace jazzutils
 				int32 chunkZ,
 				VW_CollisionVoxel* outVoxels,
 				int32 maxVoxels);
+
+			[CLink]
+			public static extern int32 VW_VisitCollisionVoxelsInRange(
+				void* world,
+				int32 minX,
+				int32 minY,
+				int32 minZ,
+				int32 maxX,
+				int32 maxY,
+				int32 maxZ,
+				VW_CollisionVoxelVisitor visitor,
+				void* userData);
+
+			[CLink]
+			public static extern int32 VW_VisitCollisionVoxelsInRangeWithExposedFaces(
+				void* world,
+				int32 minX,
+				int32 minY,
+				int32 minZ,
+				int32 maxX,
+				int32 maxY,
+				int32 maxZ,
+				uint8 requiredExposedFaces,
+				VW_CollisionVoxelVisitor visitor,
+				void* userData);
+
+			[CLink]
+			public static extern int32 VW_VisitCollisionVoxelsInRangeWithExposedFacesAndRangeFilter(
+				void* world,
+				int32 minX,
+				int32 minY,
+				int32 minZ,
+				int32 maxX,
+				int32 maxY,
+				int32 maxZ,
+				uint8 requiredExposedFaces,
+				VW_CollisionVoxelRangeFilter rangeFilter,
+				void* rangeFilterUserData,
+				VW_CollisionVoxelVisitor visitor,
+				void* userData);
+
+			[CLink]
+			public static extern int32 VW_VisitCollisionVoxelsForBoxCast(
+				void* world,
+				float minX,
+				float minY,
+				float minZ,
+				float maxX,
+				float maxY,
+				float maxZ,
+				float dirX,
+				float dirY,
+				float dirZ,
+				float maxFraction,
+				VW_CollisionVoxelVisitor visitor,
+				void* userData);
 
 			[CLink]
 			public static extern int32 VW_BuildChunkPackedQuadsWithScratch(
@@ -1188,6 +1267,21 @@ namespace jazzutils
 				return VoxelNative.VW_GetChunkLinearIndex(mHandle, chunkX, chunkY, chunkZ);
 			}
 
+			public int32 GetChunkSolidVoxelCount(int32 chunkX, int32 chunkY, int32 chunkZ)
+			{
+				return VoxelNative.VW_GetChunkSolidVoxelCount(mHandle, chunkX, chunkY, chunkZ);
+			}
+
+			public bool IsChunkEmpty(int32 chunkX, int32 chunkY, int32 chunkZ)
+			{
+				return VoxelNative.VW_IsChunkEmpty(mHandle, chunkX, chunkY, chunkZ) != 0;
+			}
+
+			public uint32 GetChunkVersion(int32 chunkX, int32 chunkY, int32 chunkZ)
+			{
+				return VoxelNative.VW_GetChunkVersion(mHandle, chunkX, chunkY, chunkZ);
+			}
+
 			public bool BuildChunkMeshWithScratch(int32 chunkX, int32 chunkY, int32 chunkZ, VoxelMeshBuildScratch scratch, out VW_Mesh mesh)
 			{
 				mesh = default;
@@ -1286,6 +1380,110 @@ namespace jazzutils
 					chunkZ,
 					outVoxels,
 					maxVoxels);
+			}
+
+			public int32 VisitCollisionVoxelsInRange(
+				int32 minX,
+				int32 minY,
+				int32 minZ,
+				int32 maxX,
+				int32 maxY,
+				int32 maxZ,
+				VW_CollisionVoxelVisitor visitor,
+				void* userData)
+			{
+				return VoxelNative.VW_VisitCollisionVoxelsInRange(
+					mHandle,
+					minX,
+					minY,
+					minZ,
+					maxX,
+					maxY,
+					maxZ,
+					visitor,
+					userData);
+			}
+
+			public int32 VisitCollisionVoxelsInRangeWithExposedFaces(
+				int32 minX,
+				int32 minY,
+				int32 minZ,
+				int32 maxX,
+				int32 maxY,
+				int32 maxZ,
+				uint8 requiredExposedFaces,
+				VW_CollisionVoxelVisitor visitor,
+				void* userData)
+			{
+				return VoxelNative.VW_VisitCollisionVoxelsInRangeWithExposedFaces(
+					mHandle,
+					minX,
+					minY,
+					minZ,
+					maxX,
+					maxY,
+					maxZ,
+					requiredExposedFaces,
+					visitor,
+					userData);
+			}
+
+			public int32 VisitCollisionVoxelsInRangeWithExposedFacesAndRangeFilter(
+				int32 minX,
+				int32 minY,
+				int32 minZ,
+				int32 maxX,
+				int32 maxY,
+				int32 maxZ,
+				uint8 requiredExposedFaces,
+				VW_CollisionVoxelRangeFilter rangeFilter,
+				void* rangeFilterUserData,
+				VW_CollisionVoxelVisitor visitor,
+				void* userData)
+			{
+				return VoxelNative.VW_VisitCollisionVoxelsInRangeWithExposedFacesAndRangeFilter(
+					mHandle,
+					minX,
+					minY,
+					minZ,
+					maxX,
+					maxY,
+					maxZ,
+					requiredExposedFaces,
+					rangeFilter,
+					rangeFilterUserData,
+					visitor,
+					userData);
+			}
+
+			public int32 VisitCollisionVoxelsForBoxCast(
+				float minX,
+				float minY,
+				float minZ,
+				float maxX,
+				float maxY,
+				float maxZ,
+				float dirX,
+				float dirY,
+				float dirZ,
+				float maxFraction,
+				VW_CollisionVoxelVisitor visitor,
+				void* userData)
+			{
+				return VoxelNative.VW_VisitCollisionVoxelsForBoxCast(
+					mHandle,
+					minX,
+					minY,
+					minZ,
+					maxX,
+					maxY,
+					maxZ,
+					dirX,
+					dirY,
+					dirZ,
+					maxFraction,
+					visitor,
+					userData);
 			}
 
 			public bool BuildChunkPackedQuads(

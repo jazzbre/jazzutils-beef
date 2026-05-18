@@ -98,6 +98,24 @@ extern "C" {
 		int chunkY,
 		int chunkZ);
 
+	VW_API int VW_GetChunkSolidVoxelCount(
+		VW_World* world,
+		int chunkX,
+		int chunkY,
+		int chunkZ);
+
+	VW_API int VW_IsChunkEmpty(
+		VW_World* world,
+		int chunkX,
+		int chunkY,
+		int chunkZ);
+
+	VW_API uint32_t VW_GetChunkVersion(
+		VW_World* world,
+		int chunkX,
+		int chunkY,
+		int chunkZ);
+
 	VW_API int VW_GetVoxel(
 		VW_World* world,
 		int x,
@@ -252,6 +270,68 @@ extern "C" {
 		int chunkZ,
 		VW_CollisionVoxel* outVoxels,
 		int maxVoxels);
+
+	// Return non-zero to continue visiting, 0 to stop.
+	using VW_CollisionVoxelVisitor = int(*)(int x, int y, int z, uint8_t material, uint8_t exposedFaces, void* userData);
+	using VW_CollisionVoxelRangeFilter = int(*)(int minX, int minY, int minZ, int maxX, int maxY, int maxZ, void* userData);
+
+	// Visits collision voxels in [min, max) voxel coordinates.
+	VW_API int VW_VisitCollisionVoxelsInRange(
+		VW_World* world,
+		int minX,
+		int minY,
+		int minZ,
+		int maxX,
+		int maxY,
+		int maxZ,
+		VW_CollisionVoxelVisitor visitor,
+		void* userData);
+
+	// Visits collision voxels in [min, max) voxel coordinates and only emits voxels
+	// with at least one bit from requiredExposedFaces set. Use 0 to accept any exposed face.
+	VW_API int VW_VisitCollisionVoxelsInRangeWithExposedFaces(
+		VW_World* world,
+		int minX,
+		int minY,
+		int minZ,
+		int maxX,
+		int maxY,
+		int maxZ,
+		uint8_t requiredExposedFaces,
+		VW_CollisionVoxelVisitor visitor,
+		void* userData);
+
+	// Visits collision voxels in [min, max) voxel coordinates, filtering whole chunk ranges
+	// before individual voxels are emitted.
+	VW_API int VW_VisitCollisionVoxelsInRangeWithExposedFacesAndRangeFilter(
+		VW_World* world,
+		int minX,
+		int minY,
+		int minZ,
+		int maxX,
+		int maxY,
+		int maxZ,
+		uint8_t requiredExposedFaces,
+		VW_CollisionVoxelRangeFilter rangeFilter,
+		void* rangeFilterUserData,
+		VW_CollisionVoxelVisitor visitor,
+		void* userData);
+
+	// Visits collision voxels in chunks touched by a swept axis-aligned voxel-space box.
+	VW_API int VW_VisitCollisionVoxelsForBoxCast(
+		VW_World* world,
+		float minX,
+		float minY,
+		float minZ,
+		float maxX,
+		float maxY,
+		float maxZ,
+		float dirX,
+		float dirY,
+		float dirZ,
+		float maxFraction,
+		VW_CollisionVoxelVisitor visitor,
+		void* userData);
 
 	typedef struct VW_PackedQuad
 	{

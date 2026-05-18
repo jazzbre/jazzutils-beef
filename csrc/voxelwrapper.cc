@@ -147,6 +147,46 @@ static const VW_Chunk* GetChunkConst(const VW_World* w, int chunkX, int chunkY, 
 	return &w->chunks[(size_t)idx];
 }
 
+static bool IsVoxelSolidFast(
+	const VW_World* w,
+	int x,
+	int y,
+	int z)
+{
+	if (!InBounds(w, x, y, z))
+		return false;
+
+	const int cs = w->chunkSize;
+
+	const int chunkX = x / cs;
+	const int chunkY = y / cs;
+	const int chunkZ = z / cs;
+
+	const VW_Chunk* chunk = GetChunkConst(w, chunkX, chunkY, chunkZ);
+
+	if (!chunk)
+		return false;
+
+	const int lx = x - chunkX * cs;
+	const int ly = y - chunkY * cs;
+	const int lz = z - chunkZ * cs;
+
+	const uint64_t row = chunk->occupancyX[(size_t)(lz * cs + ly)];
+	return (row & (1ull << lx)) != 0;
+}
+
+static uint8_t GetVoxelMaterialFast(
+	const VW_World* w,
+	int x,
+	int y,
+	int z)
+{
+	if (!IsVoxelSolidFast(w, x, y, z))
+		return 0;
+
+	return w->voxels[(size_t)VoxelIndex(w, x, y, z)];
+}
+
 static uint8_t GetVoxelInternal(const VW_World* w, int x, int y, int z)
 {
 	if (!InBounds(w, x, y, z))
@@ -154,6 +194,7 @@ static uint8_t GetVoxelInternal(const VW_World* w, int x, int y, int z)
 
 	return w->voxels[(size_t)VoxelIndex(w, x, y, z)];
 }
+
 
 static uint64_t MakeLowBitsMask(int bitCount)
 {
@@ -521,7 +562,7 @@ static uint8_t ChooseDominantMaterialInFineBlock(
 		{
 			for (int x = minX; x < maxX; x++)
 			{
-				const uint8_t material = GetVoxelInternal(w, x, y, z);
+				const uint8_t material = GetVoxelMaterialFast(w, x, y, z);
 
 				if (material != 0)
 					counts[material]++;
@@ -565,7 +606,7 @@ static uint8_t ChooseDominantMaterialOnFineFace(
 		{
 			for (int y = minY; y < maxY; y++)
 			{
-				const uint8_t material = GetVoxelInternal(w, x, y, z);
+				const uint8_t material = GetVoxelMaterialFast(w, x, y, z);
 
 				if (material != 0)
 					counts[material]++;
@@ -580,7 +621,7 @@ static uint8_t ChooseDominantMaterialOnFineFace(
 		{
 			for (int x = minX; x < maxX; x++)
 			{
-				const uint8_t material = GetVoxelInternal(w, x, y, z);
+				const uint8_t material = GetVoxelMaterialFast(w, x, y, z);
 
 				if (material != 0)
 					counts[material]++;
@@ -595,7 +636,7 @@ static uint8_t ChooseDominantMaterialOnFineFace(
 		{
 			for (int x = minX; x < maxX; x++)
 			{
-				const uint8_t material = GetVoxelInternal(w, x, y, z);
+				const uint8_t material = GetVoxelMaterialFast(w, x, y, z);
 
 				if (material != 0)
 					counts[material]++;
@@ -967,8 +1008,10 @@ static uint64_t BuildOccupancyRowFallback(
 		p[uAxis] = uMin + i;
 		p[vAxis] = vCoord;
 
-		if (GetVoxelInternal(w, p[0], p[1], p[2]) != 0)
+		if (IsVoxelSolidFast(w, p[0], p[1], p[2]))
+		{
 			bits |= 1ull << i;
+		}
 	}
 
 	return bits;
@@ -1158,7 +1201,7 @@ static uint8_t GetFaceMaterial(
 	p[uAxis] = u;
 	p[vAxis] = v;
 
-	return GetVoxelInternal(w, p[0], p[1], p[2]);
+	return GetVoxelMaterialFast(w, p[0], p[1], p[2]);
 }
 
 static bool FaceRunHasMaterial(
@@ -1605,46 +1648,6 @@ static void ConsumeBitGreedyFaceRows(
 	}
 }
 
-static void AddPackedGreedyQuadScaled(
-	std::vector<VW_PackedQuad>& quads,
-	int axis,
-	int sign,
-	int plane,
-	int u0,
-	int v0,
-	int width,
-	int height,
-	uint8_t material,
-	int scale)
-{
-	const int uAxis = (axis + 1) % 3;
-	const int vAxis = (axis + 2) % 3;
-
-	int p[3] = { 0, 0, 0 };
-
-	p[axis] = plane * scale;
-	p[uAxis] = u0 * scale;
-	p[vAxis] = v0 * scale;
-
-	VW_PackedQuad q = {};
-
-	q.data0 =
-		(PackClamp6(p[0]) << 0) |
-		(PackClamp6(p[1]) << 6) |
-		(PackClamp6(p[2]) << 12) |
-		(PackClamp6(width * scale) << 18) |
-		(PackClamp6(height * scale) << 24) |
-		(((uint32_t)axis & 3u) << 30);
-
-	const uint32_t signBit = sign > 0 ? 1u : 0u;
-
-	q.data1 =
-		((uint32_t)material) |
-		(signBit << 8);
-
-	quads.push_back(q);
-}
-
 static int GetChunkActualSizeX(const VW_World* w, int chunkX)
 {
 	const int minX = chunkX * w->chunkSize;
@@ -1674,7 +1677,7 @@ static bool IsVoxelSolidForHiddenTest(
 	if (!InBounds(w, x, y, z))
 		return false;
 
-	return GetVoxelInternal(w, x, y, z) != 0;
+	return IsVoxelSolidFast(w, x, y, z);
 }
 
 static bool IsFaceFullyCovered(
@@ -2594,30 +2597,142 @@ static uint8_t GetExposedFaceMask(
 	int y,
 	int z)
 {
-	if (GetVoxelInternal(w, x, y, z) == 0)
+	if (!IsVoxelSolidFast(w, x, y, z))
 		return 0;
 
 	uint8_t mask = 0;
 
-	if (GetVoxelInternal(w, x + 1, y, z) == 0)
+	if (!IsVoxelSolidFast(w, x + 1, y, z))
 		mask |= 1 << 0; // +X
 
-	if (GetVoxelInternal(w, x - 1, y, z) == 0)
+	if (!IsVoxelSolidFast(w, x - 1, y, z))
 		mask |= 1 << 1; // -X
 
-	if (GetVoxelInternal(w, x, y + 1, z) == 0)
+	if (!IsVoxelSolidFast(w, x, y + 1, z))
 		mask |= 1 << 2; // +Y
 
-	if (GetVoxelInternal(w, x, y - 1, z) == 0)
+	if (!IsVoxelSolidFast(w, x, y - 1, z))
 		mask |= 1 << 3; // -Y
 
-	if (GetVoxelInternal(w, x, y, z + 1) == 0)
+	if (!IsVoxelSolidFast(w, x, y, z + 1))
 		mask |= 1 << 4; // +Z
 
-	if (GetVoxelInternal(w, x, y, z - 1) == 0)
+	if (!IsVoxelSolidFast(w, x, y, z - 1))
 		mask |= 1 << 5; // -Z
 
 	return mask;
+}
+
+static int VisitCollisionVoxelsInRangeInternal(
+	VW_World* world,
+	int minX,
+	int minY,
+	int minZ,
+	int maxX,
+	int maxY,
+	int maxZ,
+	uint8_t requiredExposedFaces,
+	VW_CollisionVoxelRangeFilter rangeFilter,
+	void* rangeFilterUserData,
+	VW_CollisionVoxelVisitor visitor,
+	void* userData)
+{
+	if (!world || !visitor)
+		return 0;
+
+	minX = std::max(0, std::min(minX, world->sizeX));
+	minY = std::max(0, std::min(minY, world->sizeY));
+	minZ = std::max(0, std::min(minZ, world->sizeZ));
+	maxX = std::max(0, std::min(maxX, world->sizeX));
+	maxY = std::max(0, std::min(maxY, world->sizeY));
+	maxZ = std::max(0, std::min(maxZ, world->sizeZ));
+
+	if (minX >= maxX || minY >= maxY || minZ >= maxZ)
+		return 0;
+
+	const int cs = world->chunkSize;
+	const int minChunkX = minX / cs;
+	const int minChunkY = minY / cs;
+	const int minChunkZ = minZ / cs;
+	const int maxChunkX = (maxX - 1) / cs;
+	const int maxChunkY = (maxY - 1) / cs;
+	const int maxChunkZ = (maxZ - 1) / cs;
+
+	int visited = 0;
+
+	for (int chunkZ = minChunkZ; chunkZ <= maxChunkZ; chunkZ++)
+	{
+		const int chunkMinZ = chunkZ * cs;
+		const int startZ = std::max(minZ, chunkMinZ);
+		const int endZ = std::min(maxZ, std::min(chunkMinZ + cs, world->sizeZ));
+
+		for (int chunkY = minChunkY; chunkY <= maxChunkY; chunkY++)
+		{
+			const int chunkMinY = chunkY * cs;
+			const int startY = std::max(minY, chunkMinY);
+			const int endY = std::min(maxY, std::min(chunkMinY + cs, world->sizeY));
+
+			for (int chunkX = minChunkX; chunkX <= maxChunkX; chunkX++)
+			{
+				const int chunkIndex = ChunkLinearIndex(world, chunkX, chunkY, chunkZ);
+				if (chunkIndex < 0)
+					continue;
+
+				const VW_Chunk& chunk = world->chunks[(size_t)chunkIndex];
+				if (chunk.solidVoxelCount == 0)
+					continue;
+
+				const int chunkMinX = chunkX * cs;
+				const int startX = std::max(minX, chunkMinX);
+				const int endX = std::min(maxX, std::min(chunkMinX + cs, world->sizeX));
+				if (rangeFilter && !rangeFilter(startX, startY, startZ, endX, endY, endZ, rangeFilterUserData))
+					continue;
+
+				const int localStartX = startX - chunkMinX;
+				const int localEndX = endX - chunkMinX;
+				const uint64_t xMask = MakeLowBitsMask(localEndX - localStartX) << localStartX;
+
+				for (int z = startZ; z < endZ; z++)
+				{
+					const int lz = z - chunkMinZ;
+
+					for (int y = startY; y < endY; y++)
+					{
+						if (rangeFilter && !rangeFilter(startX, y, z, endX, y + 1, z + 1, rangeFilterUserData))
+							continue;
+
+						const int ly = y - chunkMinY;
+						uint64_t row = chunk.occupancyX[(size_t)(lz * cs + ly)] & xMask;
+
+						while (row != 0)
+						{
+							const int lx = CountTrailingZeros64(row);
+							const int x = chunkMinX + lx;
+							const uint8_t material = world->voxels[(size_t)VoxelIndex(world, x, y, z)];
+							const uint8_t exposedFaces = GetExposedFaceMask(world, x, y, z);
+
+							if (material != 0 && exposedFaces != 0 && (requiredExposedFaces == 0 || (exposedFaces & requiredExposedFaces) != 0))
+							{
+								if (rangeFilter && !rangeFilter(x, y, z, x + 1, y + 1, z + 1, rangeFilterUserData))
+								{
+									row &= row - 1;
+									continue;
+								}
+
+								visited++;
+								if (!visitor(x, y, z, material, exposedFaces, userData))
+									return visited;
+							}
+
+							row &= row - 1;
+						}
+					}
+				}
+			}
+		}
+	}
+
+	return visited;
 }
 
 extern "C"
@@ -2699,7 +2814,7 @@ extern "C"
 		RebuildAllOccupancy(world);
 
 		world->dirtyChunkIndices.clear();
-		std::fill(world->dirtyFlags.begin(), world->dirtyFlags.end(), 0);
+		std::fill(world->dirtyFlags.begin(), world->dirtyFlags.end(), uint8_t(0));
 
 		for (int z = 0; z < world->chunksZ; z++)
 		{
@@ -2762,6 +2877,41 @@ extern "C"
 		int chunkZ)
 	{
 		return ChunkLinearIndex(world, chunkX, chunkY, chunkZ);
+	}
+
+	VW_API int VW_GetChunkSolidVoxelCount(
+		VW_World* world,
+		int chunkX,
+		int chunkY,
+		int chunkZ)
+	{
+		const int chunkIndex = ChunkLinearIndex(world, chunkX, chunkY, chunkZ);
+		if (chunkIndex < 0)
+			return 0;
+
+		return world->chunks[(size_t)chunkIndex].solidVoxelCount;
+	}
+
+	VW_API int VW_IsChunkEmpty(
+		VW_World* world,
+		int chunkX,
+		int chunkY,
+		int chunkZ)
+	{
+		return VW_GetChunkSolidVoxelCount(world, chunkX, chunkY, chunkZ) == 0 ? 1 : 0;
+	}
+
+	VW_API uint32_t VW_GetChunkVersion(
+		VW_World* world,
+		int chunkX,
+		int chunkY,
+		int chunkZ)
+	{
+		const int chunkIndex = ChunkLinearIndex(world, chunkX, chunkY, chunkZ);
+		if (chunkIndex < 0)
+			return 0;
+
+		return world->chunks[(size_t)chunkIndex].version;
 	}
 
 	VW_API int VW_GetVoxel(
@@ -2948,7 +3098,7 @@ extern "C"
 					if (dx * dx > remaining)
 						continue;
 
-					const uint8_t material = GetVoxelInternal(world, x, y, z);
+					const uint8_t material = GetVoxelMaterialFast(world, x, y, z);
 					const uint8_t replacementMaterial = callback(x, y, z, material, userData);
 
 					if (replacementMaterial == material) {
@@ -3342,7 +3492,7 @@ extern "C"
 		{
 			if (InBounds(world, x, y, z))
 			{
-				const uint8_t material = GetVoxelInternal(world, x, y, z);
+				const uint8_t material = GetVoxelMaterialFast(world, x, y, z);
 
 				if (material != 0)
 				{
@@ -3463,7 +3613,7 @@ extern "C"
 			{
 				for (int x = minX; x < maxX; x++)
 				{
-					const uint8_t material = GetVoxelInternal(world, x, y, z);
+					const uint8_t material = GetVoxelMaterialFast(world, x, y, z);
 
 					if (material == 0)
 						continue;
@@ -3518,7 +3668,7 @@ extern "C"
 			{
 				for (int x = minX; x < maxX; x++)
 				{
-					const uint8_t material = GetVoxelInternal(world, x, y, z);
+					const uint8_t material = GetVoxelMaterialFast(world, x, y, z);
 
 					if (material == 0)
 						continue;
@@ -3545,6 +3695,135 @@ extern "C"
 		}
 
 		return written;
+	}
+
+	VW_API int VW_VisitCollisionVoxelsInRange(
+		VW_World* world,
+		int minX,
+		int minY,
+		int minZ,
+		int maxX,
+		int maxY,
+		int maxZ,
+		VW_CollisionVoxelVisitor visitor,
+		void* userData)
+	{
+		return VisitCollisionVoxelsInRangeInternal(
+			world,
+			minX,
+			minY,
+			minZ,
+			maxX,
+			maxY,
+			maxZ,
+			0,
+			nullptr,
+			nullptr,
+			visitor,
+			userData);
+	}
+
+	VW_API int VW_VisitCollisionVoxelsInRangeWithExposedFaces(
+		VW_World* world,
+		int minX,
+		int minY,
+		int minZ,
+		int maxX,
+		int maxY,
+		int maxZ,
+		uint8_t requiredExposedFaces,
+		VW_CollisionVoxelVisitor visitor,
+		void* userData)
+	{
+		return VisitCollisionVoxelsInRangeInternal(
+			world,
+			minX,
+			minY,
+			minZ,
+			maxX,
+			maxY,
+			maxZ,
+			requiredExposedFaces,
+			nullptr,
+			nullptr,
+			visitor,
+			userData);
+	}
+
+	VW_API int VW_VisitCollisionVoxelsInRangeWithExposedFacesAndRangeFilter(
+		VW_World* world,
+		int minX,
+		int minY,
+		int minZ,
+		int maxX,
+		int maxY,
+		int maxZ,
+		uint8_t requiredExposedFaces,
+		VW_CollisionVoxelRangeFilter rangeFilter,
+		void* rangeFilterUserData,
+		VW_CollisionVoxelVisitor visitor,
+		void* userData)
+	{
+		return VisitCollisionVoxelsInRangeInternal(
+			world,
+			minX,
+			minY,
+			minZ,
+			maxX,
+			maxY,
+			maxZ,
+			requiredExposedFaces,
+			rangeFilter,
+			rangeFilterUserData,
+			visitor,
+			userData);
+	}
+
+	VW_API int VW_VisitCollisionVoxelsForBoxCast(
+		VW_World* world,
+		float minX,
+		float minY,
+		float minZ,
+		float maxX,
+		float maxY,
+		float maxZ,
+		float dirX,
+		float dirY,
+		float dirZ,
+		float maxFraction,
+		VW_CollisionVoxelVisitor visitor,
+		void* userData)
+	{
+		if (!world || !visitor || maxFraction < 0.0f)
+			return 0;
+
+		const float endMinX = minX + dirX * maxFraction;
+		const float endMinY = minY + dirY * maxFraction;
+		const float endMinZ = minZ + dirZ * maxFraction;
+		const float endMaxX = maxX + dirX * maxFraction;
+		const float endMaxY = maxY + dirY * maxFraction;
+		const float endMaxZ = maxZ + dirZ * maxFraction;
+
+		const int rangeMinX = (int)std::floor(std::min(minX, endMinX));
+		const int rangeMinY = (int)std::floor(std::min(minY, endMinY));
+		const int rangeMinZ = (int)std::floor(std::min(minZ, endMinZ));
+		const int rangeMaxX = (int)std::ceil(std::max(maxX, endMaxX));
+		const int rangeMaxY = (int)std::ceil(std::max(maxY, endMaxY));
+		const int rangeMaxZ = (int)std::ceil(std::max(maxZ, endMaxZ));
+
+		return VisitCollisionVoxelsInRangeInternal(
+			world,
+			rangeMinX,
+			rangeMinY,
+			rangeMinZ,
+			rangeMaxX,
+			rangeMaxY,
+			rangeMaxZ,
+			0,
+			nullptr,
+			nullptr,
+			visitor,
+			userData);
 	}
 
 	VW_API int VW_BuildChunkPackedQuadsLODWithScratch(
