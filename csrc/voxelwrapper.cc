@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <chrono>
 #include <cstdlib>
 #include <cstring>
 #include <stdint.h>
@@ -3388,6 +3389,100 @@ extern "C"
 		return world->chunks[(size_t)chunkIndex].version;
 	}
 
+
+static uint64_t MipProfileNanoseconds()
+{
+	return uint64_t(
+		std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch())
+			.count());
+}
+
+VW_API int VW_ReduceMipCells(VW_World *source, VW_World *destination, const int32_t *cellIndices, int32_t firstCell,
+							 int32_t cellCount, int32_t sampleBudget, int32_t *changedIndices, int32_t changedCapacity,
+							 int32_t profile, VW_MipBatchResult *result)
+{
+	if (!result)
+		return 0;
+	*result = {};
+	if (!source || !destination || source == destination || cellCount < 0 || sampleBudget < 0 ||
+		changedCapacity < cellCount || (cellCount > 0 && !changedIndices) ||
+		destination->sizeX != (source->sizeX + 1) / 2 || destination->sizeY != (source->sizeY + 1) / 2 ||
+		destination->sizeZ != (source->sizeZ + 1) / 2)
+		return 0;
+	const size_t destinationCellCount = destination->voxels.size();
+	if (!cellIndices)
+	{
+		if (firstCell < 0 || uint64_t(firstCell) + uint64_t(cellCount) > destinationCellCount)
+			return 0;
+	}
+	else
+	{
+		for (int32_t offset = 0; offset < cellCount; ++offset)
+		{
+			if (cellIndices[offset] < 0 || uint64_t(cellIndices[offset]) >= destinationCellCount)
+				return 0;
+		}
+	}
+	const uint8_t *sourceVoxels = source->voxels.data();
+	uint8_t *destinationVoxels = destination->voxels.data();
+	const int destinationPlane = destination->sizeX * destination->sizeY;
+	const int sourcePlane = source->sizeX * source->sizeY;
+	for (int32_t offset = 0; offset < cellCount && sampleBudget - result->samples >= 8; ++offset)
+	{
+		const int index = cellIndices ? cellIndices[offset] : firstCell + offset;
+		const int x = index % destination->sizeX;
+		const int y = (index / destination->sizeX) % destination->sizeY;
+		const int z = index / destinationPlane;
+		const bool measure = profile && ((index ^ (index >> 6) ^ (index >> 12)) & 63) == 0;
+		const uint64_t readStart = measure ? MipProfileNanoseconds() : 0;
+		uint8_t children[8];
+		int childCount = 0;
+		const int endX = std::min(x * 2 + 2, source->sizeX);
+		const int endY = std::min(y * 2 + 2, source->sizeY);
+		const int endZ = std::min(z * 2 + 2, source->sizeZ);
+		for (int childZ = z * 2; childZ < endZ; ++childZ)
+			for (int childY = y * 2; childY < endY; ++childY)
+				for (int childX = x * 2; childX < endX; ++childX)
+					children[childCount++] =
+						sourceVoxels[size_t(childX + childY * source->sizeX + childZ * sourcePlane)];
+		const uint64_t reductionStart = measure ? MipProfileNanoseconds() : 0;
+		uint8_t bestMaterial = 0;
+		int bestCount = 0;
+		for (int childIndex = 0; childIndex < childCount; ++childIndex)
+		{
+			const uint8_t material = children[childIndex];
+			if (material == 0 || material == bestMaterial)
+				continue;
+			int count = 0;
+			for (int otherIndex = 0; otherIndex < childCount; ++otherIndex)
+				if (children[otherIndex] == material)
+					++count;
+			if (count > bestCount || (count == bestCount && material < bestMaterial))
+			{
+				bestMaterial = material;
+				bestCount = count;
+			}
+		}
+		const uint64_t writeStart = measure ? MipProfileNanoseconds() : 0;
+		if (destinationVoxels[size_t(index)] != bestMaterial)
+		{
+			SetVoxelMaterialInternal(destination, x, y, z, bestMaterial);
+			MarkDirtyVoxelBounds(destination, x, y, z, x, y, z);
+			changedIndices[result->changedCells++] = index;
+		}
+		if (measure)
+		{
+			const uint64_t writeEnd = MipProfileNanoseconds();
+			result->readNanoseconds += (reductionStart - readStart);
+			result->reductionNanoseconds += (writeStart - reductionStart);
+			result->writeNanoseconds += (writeEnd - writeStart);
+			++result->measuredCells;
+		}
+		++result->processedCells;
+		result->samples += childCount;
+	}
+	return 1;
+}
 	VW_API int VW_GetVoxel(
 		VW_World* world,
 		int x,

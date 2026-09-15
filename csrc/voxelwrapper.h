@@ -55,6 +55,24 @@ extern "C" {
 	typedef struct VW_World VW_World;
 	typedef struct VW_MeshBuildScratch VW_MeshBuildScratch;
 
+
+typedef struct VW_MipBatchResult
+{
+	int32_t processedCells;
+	int32_t samples;
+	int32_t changedCells;
+	int32_t measuredCells;
+	uint64_t readNanoseconds;
+	uint64_t reductionNanoseconds;
+	uint64_t writeNanoseconds;
+} VW_MipBatchResult;
+
+// Null cellIndices selects consecutive cells from firstCell. Output capacity must cover cellCount.
+// Worlds must be distinct, with destination dimensions equal to ceil(source / 2).
+VW_API int VW_ReduceMipCells(VW_World *source, VW_World *destination, const int32_t *cellIndices, int32_t firstCell,
+							 int32_t cellCount, int32_t sampleBudget, int32_t *changedIndices, int32_t changedCapacity,
+							 int32_t profile, VW_MipBatchResult *result);
+
 	VW_API VW_World* VW_CreateWorld(
 		int sizeX,
 		int sizeY,

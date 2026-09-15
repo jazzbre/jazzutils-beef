@@ -787,6 +787,19 @@ namespace jazzutils
 		public typealias VW_CollisionVoxelRangeFilter = function int32(int32 minX, int32 minY, int32 minZ, int32 maxX, int32 maxY, int32 maxZ, void* userData);
 		public typealias VW_CollisionVoxelRangeVisitor = function int32(int32 minX, int32 minY, int32 minZ, int32 maxX, int32 maxY, int32 maxZ, void* userData);
 
+
+        [CRepr]
+        public struct VW_MipBatchResult
+        {
+            public int32 processedCells;
+            public int32 samples;
+            public int32 changedCells;
+            public int32 measuredCells;
+            public uint64 readNanoseconds;
+            public uint64 reductionNanoseconds;
+            public uint64 writeNanoseconds;
+        }
+
 		public static class VoxelNative
 		{
 			[CLink]
@@ -863,6 +876,12 @@ namespace jazzutils
 				int32 chunkX,
 				int32 chunkY,
 				int32 chunkZ);
+
+
+            [CLink]
+            public static extern int32 VW_ReduceMipCells(void* source, void* destination,
+                int32* cellIndices, int32 firstCell, int32 cellCount, int32 sampleBudget,
+                int32* changedIndices, int32 changedCapacity, int32 profile, VW_MipBatchResult* result);
 
 			[CLink]
 			public static extern int32 VW_GetVoxel(
