@@ -2187,6 +2187,344 @@ static bool BuildChunkMeshBitGreedy(
 	return true;
 }
 
+static uint8_t GetCoarseFaceMaterialOnPlane(
+	const std::vector<VW_CoarseVoxel>& voxels,
+	int sx,
+	int sy,
+	int sz,
+	int axis,
+	int sign,
+	int plane,
+	int uAxis,
+	int vAxis,
+	int u,
+	int v)
+{
+	int pos[3] = { 0, 0, 0 };
+
+	pos[axis] = sign > 0 ? plane - 1 : plane;
+	pos[uAxis] = u;
+	pos[vAxis] = v;
+
+	return GetCoarseFaceMaterial(
+		voxels,
+		sx,
+		sy,
+		sz,
+		pos[0],
+		pos[1],
+		pos[2],
+		axis,
+		sign);
+}
+
+static bool CoarseFaceRunHasMaterial(
+	const std::vector<VW_CoarseVoxel>& voxels,
+	int sx,
+	int sy,
+	int sz,
+	int axis,
+	int sign,
+	int plane,
+	int uAxis,
+	int vAxis,
+	int u0,
+	int v,
+	int runLength,
+	uint8_t material)
+{
+	for (int i = 0; i < runLength; i++)
+	{
+		const uint8_t m = GetCoarseFaceMaterialOnPlane(
+			voxels,
+			sx,
+			sy,
+			sz,
+			axis,
+			sign,
+			plane,
+			uAxis,
+			vAxis,
+			u0 + i,
+			v);
+
+		if (m != material)
+			return false;
+	}
+
+	return true;
+}
+
+// Same greedy consume as the full resolution packed path, reading the coarse grid instead of
+// the world. Coarse coordinates are already chunk local, so the chunk base passed to
+// AddPackedGreedyQuad is zero rather than the chunk's world corner.
+static void ConsumeBitGreedyFaceRowsPackedCoarse(
+	const std::vector<VW_CoarseVoxel>& voxels,
+	int sx,
+	int sy,
+	int sz,
+	std::vector<VW_PackedQuad>& outQuads,
+	std::vector<uint64_t>& faceRows,
+	int axis,
+	int sign,
+	int plane,
+	int uAxis,
+	int vAxis,
+	int maskW,
+	int maskH)
+{
+	for (int y = 0; y < maskH; y++)
+	{
+		while (faceRows[(size_t)y] != 0ull)
+		{
+			const uint64_t row = faceRows[(size_t)y];
+			const int x = CountTrailingZeros64(row);
+
+			const uint8_t material = GetCoarseFaceMaterialOnPlane(
+				voxels,
+				sx,
+				sy,
+				sz,
+				axis,
+				sign,
+				plane,
+				uAxis,
+				vAxis,
+				x,
+				y);
+
+			if (material == 0)
+			{
+				faceRows[(size_t)y] &= ~(1ull << x);
+				continue;
+			}
+
+			int quadW = 1;
+
+			while (x + quadW < maskW)
+			{
+				const uint64_t bit = 1ull << (x + quadW);
+
+				if ((faceRows[(size_t)y] & bit) == 0ull)
+					break;
+
+				const uint8_t m = GetCoarseFaceMaterialOnPlane(
+					voxels,
+					sx,
+					sy,
+					sz,
+					axis,
+					sign,
+					plane,
+					uAxis,
+					vAxis,
+					x + quadW,
+					y);
+
+				if (m != material)
+					break;
+
+				quadW++;
+			}
+
+			const uint64_t quadMask =
+				quadW >= 64
+				? ~0ull
+				: (((1ull << quadW) - 1ull) << x);
+
+			int quadH = 1;
+
+			while (y + quadH < maskH)
+			{
+				const uint64_t nextRow = faceRows[(size_t)(y + quadH)];
+
+				if ((nextRow & quadMask) != quadMask)
+					break;
+
+				if (!CoarseFaceRunHasMaterial(
+					voxels,
+					sx,
+					sy,
+					sz,
+					axis,
+					sign,
+					plane,
+					uAxis,
+					vAxis,
+					x,
+					y + quadH,
+					quadW,
+					material))
+				{
+					break;
+				}
+
+				quadH++;
+			}
+
+			for (int yy = 0; yy < quadH; yy++)
+				faceRows[(size_t)(y + yy)] &= ~quadMask;
+
+			AddPackedGreedyQuad(
+				outQuads,
+				axis,
+				sign,
+				plane,
+				x,
+				y,
+				quadW,
+				quadH,
+				material,
+				0,
+				0,
+				0);
+		}
+	}
+}
+
+// Packed quads off a downsampled copy of the chunk. The quads come out in coarse units, so the
+// renderer has to draw them with a chunk size of chunkSize >> lod and a voxel scale of 1 << lod
+// for the chunk to land where it belongs at the size it belongs.
+static bool BuildChunkPackedQuadsLODCoarseGreedy(
+	VW_World* w,
+	ChunkCoordInternal c,
+	int lod,
+	VW_MeshBuildScratch& scratch)
+{
+	scratch.packedQuads.clear();
+
+	int sx = 0;
+	int sy = 0;
+	int sz = 0;
+	int scale = 1;
+	int baseX = 0;
+	int baseY = 0;
+	int baseZ = 0;
+
+	if (!BuildCoarseChunkVoxels(
+		w,
+		c,
+		lod,
+		scratch,
+		sx,
+		sy,
+		sz,
+		scale,
+		baseX,
+		baseY,
+		baseZ))
+	{
+		return false;
+	}
+
+	if (scratch.packedQuads.capacity() < 1024)
+		scratch.packedQuads.reserve(1024);
+
+	int dims[3] = { sx, sy, sz };
+
+	for (int axis = 0; axis < 3; axis++)
+	{
+		const int uAxis = (axis + 1) % 3;
+		const int vAxis = (axis + 2) % 3;
+
+		const int maskW = dims[uAxis];
+		const int maskH = dims[vAxis];
+
+		if (maskW <= 0 || maskH <= 0 || maskW > 64)
+			continue;
+
+		const uint64_t validMask = MakeLowBitsMask(maskW);
+
+		scratch.positiveRows.resize((size_t)maskH);
+		scratch.negativeRows.resize((size_t)maskH);
+
+		std::vector<uint64_t>& positiveRows = scratch.positiveRows;
+		std::vector<uint64_t>& negativeRows = scratch.negativeRows;
+
+		for (int plane = 0; plane <= dims[axis]; plane++)
+		{
+			for (int y = 0; y < maskH; y++)
+			{
+				uint64_t positive = 0;
+				uint64_t negative = 0;
+
+				for (int x = 0; x < maskW; x++)
+				{
+					int aPos[3] = { 0, 0, 0 };
+					int bPos[3] = { 0, 0, 0 };
+
+					aPos[axis] = plane - 1;
+					bPos[axis] = plane;
+
+					aPos[uAxis] = x;
+					bPos[uAxis] = x;
+
+					aPos[vAxis] = y;
+					bPos[vAxis] = y;
+
+					const uint8_t a = GetCoarseSolidMaterial(
+						scratch.coarseVoxelsLOD,
+						sx,
+						sy,
+						sz,
+						aPos[0],
+						aPos[1],
+						aPos[2]);
+
+					const uint8_t b = GetCoarseSolidMaterial(
+						scratch.coarseVoxelsLOD,
+						sx,
+						sy,
+						sz,
+						bPos[0],
+						bPos[1],
+						bPos[2]);
+
+					if (a != 0 && b == 0)
+						positive |= 1ull << x;
+					else if (a == 0 && b != 0)
+						negative |= 1ull << x;
+				}
+
+				positiveRows[(size_t)y] = positive & validMask;
+				negativeRows[(size_t)y] = negative & validMask;
+			}
+
+			ConsumeBitGreedyFaceRowsPackedCoarse(
+				scratch.coarseVoxelsLOD,
+				sx,
+				sy,
+				sz,
+				scratch.packedQuads,
+				positiveRows,
+				axis,
+				+1,
+				plane,
+				uAxis,
+				vAxis,
+				maskW,
+				maskH);
+
+			ConsumeBitGreedyFaceRowsPackedCoarse(
+				scratch.coarseVoxelsLOD,
+				sx,
+				sy,
+				sz,
+				scratch.packedQuads,
+				negativeRows,
+				axis,
+				-1,
+				plane,
+				uAxis,
+				vAxis,
+				maskW,
+				maskH);
+		}
+	}
+
+	return true;
+}
+
 static bool BuildChunkMeshLODCoarseGreedy(
 	VW_World* w,
 	ChunkCoordInternal c,
@@ -4006,6 +4344,10 @@ extern "C"
 		if (lod < 0)
 			lod = 0;
 
+		// Matches the cap the mesh LOD path uses; past this the coarse grid is a single voxel.
+		if (lod > 6)
+			lod = 6;
+
 		const int chunkIndex = ChunkLinearIndex(world, chunkX, chunkY, chunkZ);
 
 		if (chunkIndex < 0)
@@ -4021,15 +4363,9 @@ extern "C"
 		bool ok = false;
 
 		if (lod == 0)
-		{
 			ok = BuildChunkPackedQuadsBitGreedy(world, c, *scratch);
-		}
 		else
-		{
-			// Add packed LOD path later.
-			// For now, either return 0 or build normal LOD mesh.
-			ok = BuildChunkPackedQuadsBitGreedy(world, c, *scratch);
-		}
+			ok = BuildChunkPackedQuadsLODCoarseGreedy(world, c, lod, *scratch);
 
 		if (!ok)
 			return 0;
