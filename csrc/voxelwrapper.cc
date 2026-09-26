@@ -2962,6 +2962,39 @@ static uint8_t GetExposedFaceMask(
 	return mask;
 }
 
+struct CollisionVoxelRow
+{
+	uint64_t exposedFaces[6];
+	uint64_t candidates;
+};
+
+static uint64_t GetOccupancyXRow(const VW_World *world, int chunkX, int y, int z)
+{
+	if (y < 0 || z < 0 || y >= world->sizeY || z >= world->sizeZ)
+		return 0;
+	const int chunkSize = world->chunkSize;
+	const VW_Chunk *chunk = GetChunkConst(world, chunkX, y / chunkSize, z / chunkSize);
+	return chunk != nullptr ? chunk->occupancyX[(size_t)((z % chunkSize) * chunkSize + y % chunkSize)] : 0;
+}
+
+static CollisionVoxelRow GetCollisionVoxelRow(const VW_World *world, uint64_t occupied, int chunkX, int y, int z, uint8_t requiredExposedFaces)
+{
+	CollisionVoxelRow row{};
+	const int lastBit = world->chunkSize - 1;
+	const uint64_t positiveX = (occupied >> 1) | ((GetOccupancyXRow(world, chunkX + 1, y, z) & 1) << lastBit);
+	const uint64_t negativeX = (occupied << 1) | ((GetOccupancyXRow(world, chunkX - 1, y, z) >> lastBit) & 1);
+	row.exposedFaces[0] = occupied & ~positiveX;
+	row.exposedFaces[1] = occupied & ~negativeX;
+	row.exposedFaces[2] = occupied & ~GetOccupancyXRow(world, chunkX, y + 1, z);
+	row.exposedFaces[3] = occupied & ~GetOccupancyXRow(world, chunkX, y - 1, z);
+	row.exposedFaces[4] = occupied & ~GetOccupancyXRow(world, chunkX, y, z + 1);
+	row.exposedFaces[5] = occupied & ~GetOccupancyXRow(world, chunkX, y, z - 1);
+	for (int faceIndex = 0; faceIndex < 6; ++faceIndex)
+		if (requiredExposedFaces == 0 || (requiredExposedFaces & (1 << faceIndex)) != 0)
+			row.candidates |= row.exposedFaces[faceIndex];
+	return row;
+}
+
 static int VisitCollisionVoxelsInRangeInternal(
 	VW_World* world,
 	int minX,
@@ -3041,14 +3074,20 @@ static int VisitCollisionVoxelsInRangeInternal(
 							continue;
 
 						const int ly = y - chunkMinY;
-						uint64_t row = chunk.occupancyX[(size_t)(lz * cs + ly)] & xMask;
+						const uint64_t occupied = chunk.occupancyX[(size_t)(lz * cs + ly)];
+						if ((occupied & xMask) == 0)
+							continue;
+						const CollisionVoxelRow collisionRow = GetCollisionVoxelRow(world, occupied, chunkX, y, z, requiredExposedFaces);
+						uint64_t row = collisionRow.candidates & xMask;
 
 						while (row != 0)
 						{
 							const int lx = CountTrailingZeros64(row);
 							const int x = chunkMinX + lx;
 							const uint8_t material = world->voxels[(size_t)VoxelIndex(world, x, y, z)];
-							const uint8_t exposedFaces = GetExposedFaceMask(world, x, y, z);
+							uint8_t exposedFaces = 0;
+							for (int faceIndex = 0; faceIndex < 6; ++faceIndex)
+								exposedFaces |= uint8_t(((collisionRow.exposedFaces[faceIndex] >> lx) & 1) << faceIndex);
 
 							if (material != 0 && exposedFaces != 0 && (requiredExposedFaces == 0 || (exposedFaces & requiredExposedFaces) != 0))
 							{
@@ -3072,21 +3111,6 @@ static int VisitCollisionVoxelsInRangeInternal(
 	}
 
 	return visited;
-}
-
-static bool IsCollisionVoxelAccepted(
-	VW_World* world,
-	int x,
-	int y,
-	int z,
-	uint8_t requiredExposedFaces)
-{
-	const uint8_t material = world->voxels[(size_t)VoxelIndex(world, x, y, z)];
-	if (material == 0)
-		return false;
-
-	const uint8_t exposedFaces = GetExposedFaceMask(world, x, y, z);
-	return exposedFaces != 0 && (requiredExposedFaces == 0 || (exposedFaces & requiredExposedFaces) != 0);
 }
 
 static int VisitCollisionVoxelRangesInRangeInternal(
@@ -3168,28 +3192,18 @@ static int VisitCollisionVoxelRangesInRangeInternal(
 							continue;
 
 						const int ly = y - chunkMinY;
-						uint64_t row = chunk.occupancyX[(size_t)(lz * cs + ly)] & xMask;
+						const uint64_t occupied = chunk.occupancyX[(size_t)(lz * cs + ly)];
+						if ((occupied & xMask) == 0)
+							continue;
+						const CollisionVoxelRow collisionRow = GetCollisionVoxelRow(world, occupied, chunkX, y, z, requiredExposedFaces);
+						uint64_t row = collisionRow.candidates & xMask;
 
 						while (row != 0)
 						{
 							const int lx = CountTrailingZeros64(row);
 							const int x = chunkMinX + lx;
 
-							if (!IsCollisionVoxelAccepted(world, x, y, z, requiredExposedFaces))
-							{
-								row &= row - 1;
-								continue;
-							}
-
-							int endRunX = x + 1;
-							while (endRunX < endX)
-							{
-								const int nextLX = endRunX - chunkMinX;
-								if ((row & (uint64_t(1) << nextLX)) == 0 || !IsCollisionVoxelAccepted(world, endRunX, y, z, requiredExposedFaces))
-									break;
-
-								endRunX++;
-							}
+							const int endRunX = x + CountTrailingZeros64(~(row >> lx));
 
 							const uint64_t runMask = MakeLowBitsMask(endRunX - x) << lx;
 							row &= ~runMask;
@@ -3483,6 +3497,14 @@ VW_API int VW_ReduceMipCells(VW_World *source, VW_World *destination, const int3
 	}
 	return 1;
 }
+VW_API int VW_CopyVoxelData(VW_World *world, uint8_t *destination, int capacity)
+{
+	if (world == nullptr || destination == nullptr || capacity < 0 || (size_t)capacity < world->voxels.size())
+		return 0;
+	std::memcpy(destination, world->voxels.data(), world->voxels.size());
+	return 1;
+}
+
 	VW_API int VW_GetVoxel(
 		VW_World* world,
 		int x,

@@ -884,6 +884,9 @@ namespace jazzutils
                 int32* changedIndices, int32 changedCapacity, int32 profile, VW_MipBatchResult* result);
 
 			[CLink]
+			public static extern int32 VW_CopyVoxelData(void* world, uint8* destination, int32 capacity);
+
+			[CLink]
 			public static extern int32 VW_GetVoxel(
 				void* world,
 				int32 x,
@@ -1255,6 +1258,11 @@ namespace jazzutils
 			public bool SetData(uint8* voxels, int32 sizeX, int32 sizeY, int32 sizeZ)
 			{
 				return VoxelNative.VW_SetData(mHandle, voxels, sizeX, sizeY, sizeZ) != 0;
+			}
+
+			public bool CopyVoxelData(Span<uint8> destination)
+			{
+				return VoxelNative.VW_CopyVoxelData(mHandle, destination.Ptr, (int32)destination.Length) != 0;
 			}
 
 			public int32 GetVoxel(int32 x, int32 y, int32 z)
