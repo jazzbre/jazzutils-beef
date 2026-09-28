@@ -1,5 +1,6 @@
 using System;
 using System.Collections;
+using System.Threading;
 
 namespace jazzutils
 {
@@ -21,21 +22,42 @@ namespace jazzutils
 	{
 		public typealias JobHandle = void*;
 		public typealias JobPinnedHandle = void*;
+		public typealias FunctionJob = function void(void* argument);
+
+		struct FunctionJobSlot
+		{
+			public enkiTaskSet* taskSet;
+			public FunctionJob jobFunction;
+			public void* argument;
+		}
+
+		const uint32 FunctionJobSlotCount = 4096;
 
 		private static enkiTaskScheduler* taskScheduler = null;
 		private static List<Job> jobs = new .() ~ DeleteContainerAndItems!(_);
 		private static List<PinnedJob> pinnedJobs = new .() ~ DeleteContainerAndItems!(_);
+		private static FunctionJobSlot[FunctionJobSlotCount] functionJobSlots;
+		private static uint32 nextFunctionJobSlot = 0;
 
 		public static bool Initialize(uint32 workerCount)
 		{
 			taskScheduler = enkiNewTaskScheduler();
 			enkiInitTaskSchedulerNumThreads(taskScheduler, Math.Max(workerCount, 2));
+			for (var slot in ref functionJobSlots)
+			{
+				slot.taskSet = enkiCreateTaskSet(taskScheduler, => FunctionJobTask);
+			}
 			return true;
 		}
 
 		public static void Finalize()
 		{
 			enkiWaitForAll(taskScheduler);
+			for (var slot in ref functionJobSlots)
+			{
+				enkiDeleteTaskSet(taskScheduler, slot.taskSet);
+				slot = default;
+			}
 			enkiDeleteTaskScheduler(taskScheduler);
 			taskScheduler = null;
 		}
@@ -72,6 +94,25 @@ namespace jazzutils
 		public static void WaitJobs(Job job)
 		{
 			enkiWaitForTaskSet(taskScheduler, job.handle);
+		}
+
+		static void FunctionJobTask(uint32 startIndex, uint32 endIndex, uint32 workerIndex, void* userData)
+		{
+			let slot = (FunctionJobSlot*)userData;
+			slot.jobFunction(slot.argument);
+		}
+
+		public static void AddFunctionJob(FunctionJob jobFunction, void* argument)
+		{
+			FunctionJobSlot* slot;
+			repeat
+			{
+				slot = &functionJobSlots[Interlocked.Increment(ref nextFunctionJobSlot) % FunctionJobSlotCount];
+			}
+			while (enkiIsTaskSetComplete(taskScheduler, slot.taskSet) == 0);
+			slot.jobFunction = jobFunction;
+			slot.argument = argument;
+			enkiAddTaskSetArgs(taskScheduler, slot.taskSet, slot, 1);
 		}
 
 		static void PinnedJobFunction(void* userData)
@@ -118,6 +159,7 @@ namespace jazzutils
 		[CLink] private static extern enkiTaskSet*        	enkiCreateTaskSet(enkiTaskScheduler* pETS_, enkiTaskExecuteRange taskFunc_  );
 		[CLink] private static extern void                	enkiDeleteTaskSet(enkiTaskScheduler* pETS_, enkiTaskSet* pTaskSet_);
 		[CLink] private static extern void                	enkiAddTaskSetArgs(enkiTaskScheduler* pETS_, enkiTaskSet* pTaskSet_, void* pArgs_, uint32 setSize_);
+		[CLink] private static extern int32 				enkiIsTaskSetComplete(enkiTaskScheduler* pETS_, enkiTaskSet* pTaskSet_);
 		[CLink] private static extern void 					enkiWaitForTaskSet(enkiTaskScheduler* pETS_, enkiTaskSet* pTaskSet_);
 		[CLink] private static extern enkiPinnedTask* 		enkiCreatePinnedTask(enkiTaskScheduler* pETS_, enkiPinnedTaskExecute taskFunc_, uint32 threadNum_);
 		[CLink] private static extern void 					enkiAddPinnedTaskArgs(enkiTaskScheduler* pETS_, enkiPinnedTask* pTask_, void* pArgs_);
