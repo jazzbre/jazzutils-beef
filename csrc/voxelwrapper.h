@@ -354,6 +354,26 @@ VW_API int VW_ReduceMipCells(VW_World *source, VW_World *destination, const int3
 		VW_CollisionVoxelRangeVisitor visitor,
 		void* userData);
 
+	// Brick masks hold one bit per voxel of a 4x4x4 brick at x + 4 * y + 16 * z. Surface voxels
+	// are solid voxels with at least one face open to air or the world edge.
+	using VW_SurfaceBrickVisitor = int(*)(int brickX, int brickY, int brickZ, uint64_t surfaceMask, uint64_t solidMask, void* userData);
+
+	// Visits every brick that overlaps [min, max) and has surface voxels. The masks are not
+	// clipped to the range. The range filter is asked about coarser blocks before their
+	// bricks are visited. Returns 0 if the visitor stopped the walk, 1 otherwise.
+	VW_API int VW_VisitSurfaceBricks(
+		VW_World* world,
+		int minX,
+		int minY,
+		int minZ,
+		int maxX,
+		int maxY,
+		int maxZ,
+		VW_CollisionVoxelRangeFilter rangeFilter,
+		void* rangeFilterUserData,
+		VW_SurfaceBrickVisitor visitor,
+		void* userData);
+
 	// Visits collision voxels in chunks touched by a swept axis-aligned voxel-space box.
 	VW_API int VW_VisitCollisionVoxelsForBoxCast(
 		VW_World* world,

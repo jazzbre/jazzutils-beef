@@ -786,6 +786,7 @@ namespace jazzutils
 		public typealias VW_CollisionVoxelVisitor = function int32(int32 x, int32 y, int32 z, uint8 material, uint8 exposedFaces, void* userData);
 		public typealias VW_CollisionVoxelRangeFilter = function int32(int32 minX, int32 minY, int32 minZ, int32 maxX, int32 maxY, int32 maxZ, void* userData);
 		public typealias VW_CollisionVoxelRangeVisitor = function int32(int32 minX, int32 minY, int32 minZ, int32 maxX, int32 maxY, int32 maxZ, void* userData);
+		public typealias VW_SurfaceBrickVisitor = function int32(int32 brickX, int32 brickY, int32 brickZ, uint64 surfaceMask, uint64 solidMask, void* userData);
 
 
         [CRepr]
@@ -1071,6 +1072,20 @@ namespace jazzutils
 				VW_CollisionVoxelRangeFilter rangeFilter,
 				void* rangeFilterUserData,
 				VW_CollisionVoxelRangeVisitor visitor,
+				void* userData);
+
+			[CLink]
+			public static extern int32 VW_VisitSurfaceBricks(
+				void* world,
+				int32 minX,
+				int32 minY,
+				int32 minZ,
+				int32 maxX,
+				int32 maxY,
+				int32 maxZ,
+				VW_CollisionVoxelRangeFilter rangeFilter,
+				void* rangeFilterUserData,
+				VW_SurfaceBrickVisitor visitor,
 				void* userData);
 
 			[CLink]
@@ -1521,6 +1536,32 @@ namespace jazzutils
 					maxY,
 					maxZ,
 					requiredExposedFaces,
+					rangeFilter,
+					rangeFilterUserData,
+					visitor,
+					userData);
+			}
+
+			public int32 VisitSurfaceBricks(
+				int32 minX,
+				int32 minY,
+				int32 minZ,
+				int32 maxX,
+				int32 maxY,
+				int32 maxZ,
+				VW_CollisionVoxelRangeFilter rangeFilter,
+				void* rangeFilterUserData,
+				VW_SurfaceBrickVisitor visitor,
+				void* userData)
+			{
+				return VoxelNative.VW_VisitSurfaceBricks(
+					mHandle,
+					minX,
+					minY,
+					minZ,
+					maxX,
+					maxY,
+					maxZ,
 					rangeFilter,
 					rangeFilterUserData,
 					visitor,

@@ -75,6 +75,22 @@ struct VW_World
 
 	std::vector<int> dirtyChunkIndices;
 	std::vector<uint8_t> dirtyFlags;
+
+	// A brick is 4x4x4 voxels, one bit per voxel at x + 4 * y + 16 * z. A region is 4x4x4
+	// bricks and a sector 4x4x4 regions, one bit per child that has any surface voxel.
+	int bricksX = 0;
+	int bricksY = 0;
+	int bricksZ = 0;
+	int regionsX = 0;
+	int regionsY = 0;
+	int regionsZ = 0;
+	int sectorsX = 0;
+	int sectorsY = 0;
+	int sectorsZ = 0;
+	std::vector<uint64_t> solidBrickMasks;
+	std::vector<uint64_t> surfaceBrickMasks;
+	std::vector<uint64_t> regionSurfaceMasks;
+	std::vector<uint64_t> sectorSurfaceMasks;
 };
 
 static bool InBounds(const VW_World* w, int x, int y, int z)
@@ -247,6 +263,145 @@ static int CountTrailingZeros64(uint64_t value)
 #endif
 }
 
+static const int BrickSize = 4;
+static const uint64_t BrickFaceXMinimum = 0x1111111111111111ull;
+static const uint64_t BrickFaceXMaximum = BrickFaceXMinimum << 3;
+static const uint64_t BrickFaceYMinimum = 0x000F000F000F000Full;
+static const uint64_t BrickFaceYMaximum = BrickFaceYMinimum << 12;
+static const uint64_t BrickFaceZMinimum = 0xFFFFull;
+static const uint64_t BrickFaceZMaximum = BrickFaceZMinimum << 48;
+
+static int BrickBitIndex(int localX, int localY, int localZ)
+{
+	return localX + localY * BrickSize + localZ * BrickSize * BrickSize;
+}
+
+static int BrickLinearIndex(const VW_World* w, int brickX, int brickY, int brickZ)
+{
+	return brickX + brickY * w->bricksX + brickZ * w->bricksX * w->bricksY;
+}
+
+static int RegionLinearIndex(const VW_World* w, int regionX, int regionY, int regionZ)
+{
+	return regionX + regionY * w->regionsX + regionZ * w->regionsX * w->regionsY;
+}
+
+static int SectorLinearIndex(const VW_World* w, int sectorX, int sectorY, int sectorZ)
+{
+	return sectorX + sectorY * w->sectorsX + sectorZ * w->sectorsX * w->sectorsY;
+}
+
+static uint64_t GetSolidBrickMask(const VW_World* w, int brickX, int brickY, int brickZ)
+{
+	if (brickX < 0 || brickY < 0 || brickZ < 0 || brickX >= w->bricksX || brickY >= w->bricksY || brickZ >= w->bricksZ)
+		return 0;
+	return w->solidBrickMasks[(size_t)BrickLinearIndex(w, brickX, brickY, brickZ)];
+}
+
+static uint64_t CalculateSurfaceBrickMask(const VW_World* w, int brickX, int brickY, int brickZ)
+{
+	const uint64_t solid = GetSolidBrickMask(w, brickX, brickY, brickZ);
+	if (solid == 0)
+		return 0;
+
+	const uint64_t solidPositiveX = ((solid >> 1) & ~BrickFaceXMaximum) | ((GetSolidBrickMask(w, brickX + 1, brickY, brickZ) & BrickFaceXMinimum) << 3);
+	const uint64_t solidNegativeX = ((solid << 1) & ~BrickFaceXMinimum) | ((GetSolidBrickMask(w, brickX - 1, brickY, brickZ) & BrickFaceXMaximum) >> 3);
+	const uint64_t solidPositiveY = ((solid >> 4) & ~BrickFaceYMaximum) | ((GetSolidBrickMask(w, brickX, brickY + 1, brickZ) & BrickFaceYMinimum) << 12);
+	const uint64_t solidNegativeY = ((solid << 4) & ~BrickFaceYMinimum) | ((GetSolidBrickMask(w, brickX, brickY - 1, brickZ) & BrickFaceYMaximum) >> 12);
+	const uint64_t solidPositiveZ = (solid >> 16) | ((GetSolidBrickMask(w, brickX, brickY, brickZ + 1) & BrickFaceZMinimum) << 48);
+	const uint64_t solidNegativeZ = (solid << 16) | ((GetSolidBrickMask(w, brickX, brickY, brickZ - 1) & BrickFaceZMaximum) >> 48);
+	return solid & ~(solidPositiveX & solidNegativeX & solidPositiveY & solidNegativeY & solidPositiveZ & solidNegativeZ);
+}
+
+static void StoreSurfaceBrickMask(VW_World* w, int brickX, int brickY, int brickZ, uint64_t surfaceMask)
+{
+	uint64_t& storedMask = w->surfaceBrickMasks[(size_t)BrickLinearIndex(w, brickX, brickY, brickZ)];
+	const bool hadSurface = storedMask != 0;
+	storedMask = surfaceMask;
+	if (hadSurface == (surfaceMask != 0))
+		return;
+
+	const int regionX = brickX / BrickSize;
+	const int regionY = brickY / BrickSize;
+	const int regionZ = brickZ / BrickSize;
+	uint64_t& regionMask = w->regionSurfaceMasks[(size_t)RegionLinearIndex(w, regionX, regionY, regionZ)];
+	const uint64_t brickBit = 1ull << BrickBitIndex(brickX % BrickSize, brickY % BrickSize, brickZ % BrickSize);
+	const bool regionHadSurface = regionMask != 0;
+	regionMask = surfaceMask != 0 ? (regionMask | brickBit) : (regionMask & ~brickBit);
+	if (regionHadSurface == (regionMask != 0))
+		return;
+
+	uint64_t& sectorMask = w->sectorSurfaceMasks[(size_t)SectorLinearIndex(w, regionX / BrickSize, regionY / BrickSize, regionZ / BrickSize)];
+	const uint64_t regionBit = 1ull << BrickBitIndex(regionX % BrickSize, regionY % BrickSize, regionZ % BrickSize);
+	sectorMask = regionMask != 0 ? (sectorMask | regionBit) : (sectorMask & ~regionBit);
+}
+
+static void RefreshSurfaceBrickMask(VW_World* w, int brickX, int brickY, int brickZ)
+{
+	if (brickX < 0 || brickY < 0 || brickZ < 0 || brickX >= w->bricksX || brickY >= w->bricksY || brickZ >= w->bricksZ)
+		return;
+	StoreSurfaceBrickMask(w, brickX, brickY, brickZ, CalculateSurfaceBrickMask(w, brickX, brickY, brickZ));
+}
+
+static void SetBrickSolid(VW_World* w, int x, int y, int z, bool solid)
+{
+	const int brickX = x / BrickSize;
+	const int brickY = y / BrickSize;
+	const int brickZ = z / BrickSize;
+	const int localX = x % BrickSize;
+	const int localY = y % BrickSize;
+	const int localZ = z % BrickSize;
+	uint64_t& solidMask = w->solidBrickMasks[(size_t)BrickLinearIndex(w, brickX, brickY, brickZ)];
+	const uint64_t voxelBit = 1ull << BrickBitIndex(localX, localY, localZ);
+	solidMask = solid ? (solidMask | voxelBit) : (solidMask & ~voxelBit);
+
+	RefreshSurfaceBrickMask(w, brickX, brickY, brickZ);
+	if (localX == 0)
+		RefreshSurfaceBrickMask(w, brickX - 1, brickY, brickZ);
+	if (localX == BrickSize - 1)
+		RefreshSurfaceBrickMask(w, brickX + 1, brickY, brickZ);
+	if (localY == 0)
+		RefreshSurfaceBrickMask(w, brickX, brickY - 1, brickZ);
+	if (localY == BrickSize - 1)
+		RefreshSurfaceBrickMask(w, brickX, brickY + 1, brickZ);
+	if (localZ == 0)
+		RefreshSurfaceBrickMask(w, brickX, brickY, brickZ - 1);
+	if (localZ == BrickSize - 1)
+		RefreshSurfaceBrickMask(w, brickX, brickY, brickZ + 1);
+}
+
+static void RebuildAllBrickMasks(VW_World* w)
+{
+	std::fill(w->solidBrickMasks.begin(), w->solidBrickMasks.end(), 0ull);
+	std::fill(w->surfaceBrickMasks.begin(), w->surfaceBrickMasks.end(), 0ull);
+	std::fill(w->regionSurfaceMasks.begin(), w->regionSurfaceMasks.end(), 0ull);
+	std::fill(w->sectorSurfaceMasks.begin(), w->sectorSurfaceMasks.end(), 0ull);
+
+	for (int z = 0; z < w->sizeZ; z++)
+	{
+		for (int y = 0; y < w->sizeY; y++)
+		{
+			const uint8_t* row = &w->voxels[(size_t)VoxelIndex(w, 0, y, z)];
+			uint64_t* brickRow = &w->solidBrickMasks[(size_t)BrickLinearIndex(w, 0, y / BrickSize, z / BrickSize)];
+			const int rowShift = BrickBitIndex(0, y % BrickSize, z % BrickSize);
+			for (int x = 0; x < w->sizeX; x++)
+			{
+				if (row[x] != 0)
+					brickRow[x / BrickSize] |= 1ull << (rowShift + x % BrickSize);
+			}
+		}
+	}
+
+	for (int brickZ = 0; brickZ < w->bricksZ; brickZ++)
+	{
+		for (int brickY = 0; brickY < w->bricksY; brickY++)
+		{
+			for (int brickX = 0; brickX < w->bricksX; brickX++)
+				StoreSurfaceBrickMask(w, brickX, brickY, brickZ, CalculateSurfaceBrickMask(w, brickX, brickY, brickZ));
+		}
+	}
+}
+
 static void MarkDirtyChunkIndex(VW_World* w, int chunkIndex)
 {
 	if (!w)
@@ -374,6 +529,9 @@ static bool SetVoxelMaterialInternal(
 	w->voxels[(size_t)voxelIndex] = material;
 	chunk->version++;
 
+	if (oldSolid != newSolid)
+		SetBrickSolid(w, x, y, z, newSolid);
+
 	return true;
 }
 
@@ -420,6 +578,8 @@ static bool ClearVoxelToAirInternal(
 
 	chunk->solidVoxelCount--;
 	chunk->version++;
+
+	SetBrickSolid(w, x, y, z, false);
 
 	return true;
 }
@@ -481,6 +641,8 @@ static void RebuildAllOccupancy(VW_World* w)
 			}
 		}
 	}
+
+	RebuildAllBrickMasks(w);
 }
 
 static float Dot(VW_Vec3 a, VW_Vec3 b)
@@ -3271,6 +3433,20 @@ extern "C"
 			chunk.version = 0;
 		}
 
+		w->bricksX = (sizeX + BrickSize - 1) / BrickSize;
+		w->bricksY = (sizeY + BrickSize - 1) / BrickSize;
+		w->bricksZ = (sizeZ + BrickSize - 1) / BrickSize;
+		w->regionsX = (w->bricksX + BrickSize - 1) / BrickSize;
+		w->regionsY = (w->bricksY + BrickSize - 1) / BrickSize;
+		w->regionsZ = (w->bricksZ + BrickSize - 1) / BrickSize;
+		w->sectorsX = (w->regionsX + BrickSize - 1) / BrickSize;
+		w->sectorsY = (w->regionsY + BrickSize - 1) / BrickSize;
+		w->sectorsZ = (w->regionsZ + BrickSize - 1) / BrickSize;
+		w->solidBrickMasks.resize((size_t)w->bricksX * w->bricksY * w->bricksZ, 0ull);
+		w->surfaceBrickMasks.resize((size_t)w->bricksX * w->bricksY * w->bricksZ, 0ull);
+		w->regionSurfaceMasks.resize((size_t)w->regionsX * w->regionsY * w->regionsZ, 0ull);
+		w->sectorSurfaceMasks.resize((size_t)w->sectorsX * w->sectorsY * w->sectorsZ, 0ull);
+
 		return w;
 	}
 
@@ -4397,6 +4573,85 @@ VW_API int VW_CopyVoxelData(VW_World *world, uint8_t *destination, int capacity)
 			rangeFilterUserData,
 			visitor,
 			userData);
+	}
+
+	VW_API int VW_VisitSurfaceBricks(
+		VW_World* world,
+		int minX,
+		int minY,
+		int minZ,
+		int maxX,
+		int maxY,
+		int maxZ,
+		VW_CollisionVoxelRangeFilter rangeFilter,
+		void* rangeFilterUserData,
+		VW_SurfaceBrickVisitor visitor,
+		void* userData)
+	{
+		if (!world || !visitor)
+			return 1;
+
+		minX = std::max(0, minX);
+		minY = std::max(0, minY);
+		minZ = std::max(0, minZ);
+		maxX = std::min(maxX, world->sizeX);
+		maxY = std::min(maxY, world->sizeY);
+		maxZ = std::min(maxZ, world->sizeZ);
+		if (minX >= maxX || minY >= maxY || minZ >= maxZ)
+			return 1;
+
+		const int regionVoxels = BrickSize * BrickSize;
+		const int sectorVoxels = regionVoxels * BrickSize;
+		auto passesFilter = [&](int boundsMinX, int boundsMinY, int boundsMinZ, int size) {
+			if (!rangeFilter)
+				return true;
+			return rangeFilter(std::max(minX, boundsMinX), std::max(minY, boundsMinY), std::max(minZ, boundsMinZ),
+				std::min(maxX, boundsMinX + size), std::min(maxY, boundsMinY + size), std::min(maxZ, boundsMinZ + size), rangeFilterUserData) != 0;
+		};
+		auto overlapsRange = [&](int boundsMinX, int boundsMinY, int boundsMinZ, int size) {
+			return boundsMinX < maxX && boundsMinY < maxY && boundsMinZ < maxZ &&
+				boundsMinX + size > minX && boundsMinY + size > minY && boundsMinZ + size > minZ;
+		};
+
+		for (int sectorZ = minZ / sectorVoxels; sectorZ <= (maxZ - 1) / sectorVoxels; sectorZ++)
+		{
+			for (int sectorY = minY / sectorVoxels; sectorY <= (maxY - 1) / sectorVoxels; sectorY++)
+			{
+				for (int sectorX = minX / sectorVoxels; sectorX <= (maxX - 1) / sectorVoxels; sectorX++)
+				{
+					uint64_t sectorMask = world->sectorSurfaceMasks[(size_t)SectorLinearIndex(world, sectorX, sectorY, sectorZ)];
+					if (sectorMask == 0 || !passesFilter(sectorX * sectorVoxels, sectorY * sectorVoxels, sectorZ * sectorVoxels, sectorVoxels))
+						continue;
+
+					for (; sectorMask != 0; sectorMask &= sectorMask - 1)
+					{
+						const int regionBit = CountTrailingZeros64(sectorMask);
+						const int regionX = sectorX * BrickSize + regionBit % BrickSize;
+						const int regionY = sectorY * BrickSize + (regionBit / BrickSize) % BrickSize;
+						const int regionZ = sectorZ * BrickSize + regionBit / (BrickSize * BrickSize);
+						if (!overlapsRange(regionX * regionVoxels, regionY * regionVoxels, regionZ * regionVoxels, regionVoxels) ||
+							!passesFilter(regionX * regionVoxels, regionY * regionVoxels, regionZ * regionVoxels, regionVoxels))
+							continue;
+
+						for (uint64_t regionMask = world->regionSurfaceMasks[(size_t)RegionLinearIndex(world, regionX, regionY, regionZ)]; regionMask != 0; regionMask &= regionMask - 1)
+						{
+							const int brickBit = CountTrailingZeros64(regionMask);
+							const int brickX = regionX * BrickSize + brickBit % BrickSize;
+							const int brickY = regionY * BrickSize + (brickBit / BrickSize) % BrickSize;
+							const int brickZ = regionZ * BrickSize + brickBit / (BrickSize * BrickSize);
+							if (!overlapsRange(brickX * BrickSize, brickY * BrickSize, brickZ * BrickSize, BrickSize))
+								continue;
+
+							const size_t brickIndex = (size_t)BrickLinearIndex(world, brickX, brickY, brickZ);
+							if (!visitor(brickX, brickY, brickZ, world->surfaceBrickMasks[brickIndex], world->solidBrickMasks[brickIndex], userData))
+								return 0;
+						}
+					}
+				}
+			}
+		}
+
+		return 1;
 	}
 
 	VW_API int VW_VisitCollisionVoxelsForBoxCast(
