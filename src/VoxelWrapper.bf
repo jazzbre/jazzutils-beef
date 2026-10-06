@@ -888,6 +888,9 @@ namespace jazzutils
 			public static extern int32 VW_CopyVoxelData(void* world, uint8* destination, int32 capacity);
 
 			[CLink]
+			public static extern void* VW_CloneWorld(void* source);
+
+			[CLink]
 			public static extern int32 VW_GetVoxel(
 				void* world,
 				int32 x,
@@ -1190,6 +1193,16 @@ namespace jazzutils
 			public this(int32 sizeX, int32 sizeY, int32 sizeZ, int32 chunkSize = 32)
 			{
 				mHandle = VoxelNative.VW_CreateWorld(sizeX, sizeY, sizeZ, chunkSize);
+			}
+
+			private this(void* handle)
+			{
+				mHandle = handle;
+			}
+
+			public VoxelWorld Clone()
+			{
+				return new VoxelWorld(VoxelNative.VW_CloneWorld(mHandle));
 			}
 
 			public ~this()

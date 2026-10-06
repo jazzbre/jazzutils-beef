@@ -3681,6 +3681,11 @@ VW_API int VW_CopyVoxelData(VW_World *world, uint8_t *destination, int capacity)
 	return 1;
 }
 
+VW_API VW_World* VW_CloneWorld(const VW_World* source)
+{
+	return source ? new VW_World(*source) : nullptr;
+}
+
 	VW_API int VW_GetVoxel(
 		VW_World* world,
 		int x,
