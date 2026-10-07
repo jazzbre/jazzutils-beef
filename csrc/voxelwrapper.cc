@@ -3690,6 +3690,25 @@ VW_API int VW_CopyVoxelData(VW_World *world, uint8_t *destination, int capacity)
 	return 1;
 }
 
+VW_API int VW_CopyVoxelRegion(const VW_World* world, int minX, int minY, int minZ, int sizeX, int sizeY, int sizeZ,
+	uint8_t* destination, int64_t destinationRowPitch, int64_t destinationSlicePitch)
+{
+	if (world == nullptr || destination == nullptr || minX < 0 || minY < 0 || minZ < 0 || sizeX <= 0 || sizeY <= 0 || sizeZ <= 0 ||
+		minX + sizeX > world->sizeX || minY + sizeY > world->sizeY || minZ + sizeZ > world->sizeZ ||
+		destinationRowPitch < sizeX || destinationSlicePitch < destinationRowPitch * sizeY)
+		return 0;
+
+	for (int z = 0; z < sizeZ; z++)
+	{
+		for (int y = 0; y < sizeY; y++)
+		{
+			std::memcpy(destination + z * destinationSlicePitch + y * destinationRowPitch,
+				world->voxels.data() + (size_t)VoxelIndex(world, minX, minY + y, minZ + z), (size_t)sizeX);
+		}
+	}
+	return 1;
+}
+
 VW_API VW_World* VW_CloneWorld(const VW_World* source)
 {
 	return source ? new VW_World(*source) : nullptr;

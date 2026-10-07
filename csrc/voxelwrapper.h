@@ -136,6 +136,9 @@ VW_API int VW_ReduceMipCells(VW_World *source, VW_World *destination, const int3
 
 	VW_API int VW_CopyVoxelData(VW_World *world, uint8_t *destination, int capacity);
 
+	VW_API int VW_CopyVoxelRegion(const VW_World* world, int minX, int minY, int minZ, int sizeX, int sizeY, int sizeZ,
+		uint8_t* destination, int64_t destinationRowPitch, int64_t destinationSlicePitch);
+
 	VW_API VW_World* VW_CloneWorld(const VW_World* source);
 
 	VW_API int VW_GetVoxel(

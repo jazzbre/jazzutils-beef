@@ -907,6 +907,10 @@ namespace jazzutils
 			public static extern void* VW_CloneWorld(void* source);
 
 			[CLink]
+			public static extern int32 VW_CopyVoxelRegion(void* world, int32 minX, int32 minY, int32 minZ, int32 sizeX, int32 sizeY, int32 sizeZ,
+				uint8* destination, int64 destinationRowPitch, int64 destinationSlicePitch);
+
+			[CLink]
 			public static extern int32 VW_ComputeVoxelStatistics(void* world, VW_VoxelStatistics* statistics);
 
 			[CLink]
@@ -1222,6 +1226,12 @@ namespace jazzutils
 			public VoxelWorld Clone()
 			{
 				return new VoxelWorld(VoxelNative.VW_CloneWorld(mHandle));
+			}
+
+			public bool CopyVoxelRegion(int32 minX, int32 minY, int32 minZ, int32 sizeX, int32 sizeY, int32 sizeZ,
+				uint8* destination, int64 destinationRowPitch, int64 destinationSlicePitch)
+			{
+				return VoxelNative.VW_CopyVoxelRegion(mHandle, minX, minY, minZ, sizeX, sizeY, sizeZ, destination, destinationRowPitch, destinationSlicePitch) != 0;
 			}
 
 			public bool ComputeStatistics(out VW_VoxelStatistics statistics)
