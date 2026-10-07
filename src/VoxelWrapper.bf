@@ -70,18 +70,16 @@ namespace jazzutils
 		public struct VW_VoxelStatistics
 		{
 			public int64 solidVoxelCount;
-			public int64 surfaceVoxelCount;
-			public int64 surfaceSumX;
-			public int64 surfaceSumY;
-			public int64 surfaceSumZ;
-			public int64 surfaceSumXX;
-			public int64 surfaceSumYY;
-			public int64 surfaceSumZZ;
-			public int64 surfaceSumXY;
-			public int64 surfaceSumXZ;
-			public int64 surfaceSumYZ;
+			public int64 sumX;
+			public int64 sumY;
+			public int64 sumZ;
+			public int64 sumXX;
+			public int64 sumYY;
+			public int64 sumZZ;
+			public int64 sumXY;
+			public int64 sumXZ;
+			public int64 sumYZ;
 			public int64[256] voxelCountByMaterial;
-			public int64[256] surfaceVoxelCountByMaterial;
 		}
 
 		[CRepr]

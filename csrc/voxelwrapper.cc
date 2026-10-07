@@ -263,6 +263,15 @@ static int CountTrailingZeros64(uint64_t value)
 #endif
 }
 
+static int PopCount64(uint64_t value)
+{
+#if defined(_MSC_VER)
+	return (int)__popcnt64(value);
+#else
+	return __builtin_popcountll(value);
+#endif
+}
+
 static const int BrickSize = 4;
 static const uint64_t BrickFaceXMinimum = 0x1111111111111111ull;
 static const uint64_t BrickFaceXMaximum = BrickFaceXMinimum << 3;
@@ -3713,32 +3722,60 @@ VW_API int VW_ComputeVoxelStatistics(const VW_World* world, VW_VoxelStatistics* 
 		statistics->solidVoxelCount += statistics->voxelCountByMaterial[material];
 	}
 
+	// Each brick's sums come from its solid mask: popcounts of the bits whose local x, y or z
+	// is k give that coordinate's sum and square sum, and of the bits matching two at once the
+	// cross terms. The brick origin is then added back in.
+	uint64_t localX[BrickSize];
+	uint64_t localY[BrickSize];
+	uint64_t localZ[BrickSize];
+	for (int k = 0; k < BrickSize; k++)
+	{
+		localX[k] = BrickFaceXMinimum << k;
+		localY[k] = BrickFaceYMinimum << (BrickSize * k);
+		localZ[k] = BrickFaceZMinimum << (BrickSize * BrickSize * k);
+	}
 	for (int brickZ = 0; brickZ < world->bricksZ; brickZ++)
 	{
 		for (int brickY = 0; brickY < world->bricksY; brickY++)
 		{
 			for (int brickX = 0; brickX < world->bricksX; brickX++)
 			{
-				uint64_t surfaceMask = world->surfaceBrickMasks[(size_t)BrickLinearIndex(world, brickX, brickY, brickZ)];
-				while (surfaceMask != 0)
+				const uint64_t solid = world->solidBrickMasks[(size_t)BrickLinearIndex(world, brickX, brickY, brickZ)];
+				if (solid == 0)
+					continue;
+
+				const int64_t count = PopCount64(solid);
+				int64_t sumX = 0, sumY = 0, sumZ = 0, sumXX = 0, sumYY = 0, sumZZ = 0, sumXY = 0, sumXZ = 0, sumYZ = 0;
+				for (int a = 1; a < BrickSize; a++)
 				{
-					const int bit = CountTrailingZeros64(surfaceMask);
-					surfaceMask &= surfaceMask - 1;
-					const int64_t x = brickX * BrickSize + (bit & 3);
-					const int64_t y = brickY * BrickSize + ((bit >> 2) & 3);
-					const int64_t z = brickZ * BrickSize + (bit >> 4);
-					statistics->surfaceVoxelCountByMaterial[voxels[(size_t)VoxelIndex(world, (int)x, (int)y, (int)z)]]++;
-					statistics->surfaceVoxelCount++;
-					statistics->surfaceSumX += x;
-					statistics->surfaceSumY += y;
-					statistics->surfaceSumZ += z;
-					statistics->surfaceSumXX += x * x;
-					statistics->surfaceSumYY += y * y;
-					statistics->surfaceSumZZ += z * z;
-					statistics->surfaceSumXY += x * y;
-					statistics->surfaceSumXZ += x * z;
-					statistics->surfaceSumYZ += y * z;
+					const int64_t countX = PopCount64(solid & localX[a]);
+					const int64_t countY = PopCount64(solid & localY[a]);
+					const int64_t countZ = PopCount64(solid & localZ[a]);
+					sumX += a * countX;
+					sumY += a * countY;
+					sumZ += a * countZ;
+					sumXX += a * a * countX;
+					sumYY += a * a * countY;
+					sumZZ += a * a * countZ;
+					for (int b = 1; b < BrickSize; b++)
+					{
+						sumXY += a * b * PopCount64(solid & localX[a] & localY[b]);
+						sumXZ += a * b * PopCount64(solid & localX[a] & localZ[b]);
+						sumYZ += a * b * PopCount64(solid & localY[a] & localZ[b]);
+					}
 				}
+				const int64_t originX = (int64_t)brickX * BrickSize;
+				const int64_t originY = (int64_t)brickY * BrickSize;
+				const int64_t originZ = (int64_t)brickZ * BrickSize;
+				statistics->sumX += originX * count + sumX;
+				statistics->sumY += originY * count + sumY;
+				statistics->sumZ += originZ * count + sumZ;
+				statistics->sumXX += originX * originX * count + 2 * originX * sumX + sumXX;
+				statistics->sumYY += originY * originY * count + 2 * originY * sumY + sumYY;
+				statistics->sumZZ += originZ * originZ * count + 2 * originZ * sumZ + sumZZ;
+				statistics->sumXY += originX * originY * count + originX * sumY + originY * sumX + sumXY;
+				statistics->sumXZ += originX * originZ * count + originX * sumZ + originZ * sumX + sumXZ;
+				statistics->sumYZ += originY * originZ * count + originY * sumZ + originZ * sumY + sumYZ;
 			}
 		}
 	}
