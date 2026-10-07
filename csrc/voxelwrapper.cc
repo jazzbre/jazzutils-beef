@@ -3686,6 +3686,65 @@ VW_API VW_World* VW_CloneWorld(const VW_World* source)
 	return source ? new VW_World(*source) : nullptr;
 }
 
+VW_API int VW_ComputeVoxelStatistics(const VW_World* world, VW_VoxelStatistics* statistics)
+{
+	if (world == nullptr || statistics == nullptr)
+		return 0;
+
+	std::memset(statistics, 0, sizeof(VW_VoxelStatistics));
+
+	// Four histograms so consecutive equal bytes do not stall on the same counter.
+	uint32_t histograms[4][256] = {};
+	const uint8_t* voxels = world->voxels.data();
+	const size_t voxelCount = world->voxels.size();
+	size_t voxelIndex = 0;
+	for (; voxelIndex + 4 <= voxelCount; voxelIndex += 4)
+	{
+		histograms[0][voxels[voxelIndex]]++;
+		histograms[1][voxels[voxelIndex + 1]]++;
+		histograms[2][voxels[voxelIndex + 2]]++;
+		histograms[3][voxels[voxelIndex + 3]]++;
+	}
+	for (; voxelIndex < voxelCount; voxelIndex++)
+		histograms[0][voxels[voxelIndex]]++;
+	for (int material = 1; material < 256; material++)
+	{
+		statistics->voxelCountByMaterial[material] = (int64_t)histograms[0][material] + histograms[1][material] + histograms[2][material] + histograms[3][material];
+		statistics->solidVoxelCount += statistics->voxelCountByMaterial[material];
+	}
+
+	for (int brickZ = 0; brickZ < world->bricksZ; brickZ++)
+	{
+		for (int brickY = 0; brickY < world->bricksY; brickY++)
+		{
+			for (int brickX = 0; brickX < world->bricksX; brickX++)
+			{
+				uint64_t surfaceMask = world->surfaceBrickMasks[(size_t)BrickLinearIndex(world, brickX, brickY, brickZ)];
+				while (surfaceMask != 0)
+				{
+					const int bit = CountTrailingZeros64(surfaceMask);
+					surfaceMask &= surfaceMask - 1;
+					const int64_t x = brickX * BrickSize + (bit & 3);
+					const int64_t y = brickY * BrickSize + ((bit >> 2) & 3);
+					const int64_t z = brickZ * BrickSize + (bit >> 4);
+					statistics->surfaceVoxelCountByMaterial[voxels[(size_t)VoxelIndex(world, (int)x, (int)y, (int)z)]]++;
+					statistics->surfaceVoxelCount++;
+					statistics->surfaceSumX += x;
+					statistics->surfaceSumY += y;
+					statistics->surfaceSumZ += z;
+					statistics->surfaceSumXX += x * x;
+					statistics->surfaceSumYY += y * y;
+					statistics->surfaceSumZZ += z * z;
+					statistics->surfaceSumXY += x * y;
+					statistics->surfaceSumXZ += x * z;
+					statistics->surfaceSumYZ += y * z;
+				}
+			}
+		}
+	}
+	return 1;
+}
+
 	VW_API int VW_GetVoxel(
 		VW_World* world,
 		int x,

@@ -67,6 +67,24 @@ namespace jazzutils
 		}
 
 		[CRepr]
+		public struct VW_VoxelStatistics
+		{
+			public int64 solidVoxelCount;
+			public int64 surfaceVoxelCount;
+			public int64 surfaceSumX;
+			public int64 surfaceSumY;
+			public int64 surfaceSumZ;
+			public int64 surfaceSumXX;
+			public int64 surfaceSumYY;
+			public int64 surfaceSumZZ;
+			public int64 surfaceSumXY;
+			public int64 surfaceSumXZ;
+			public int64 surfaceSumYZ;
+			public int64[256] voxelCountByMaterial;
+			public int64[256] surfaceVoxelCountByMaterial;
+		}
+
+		[CRepr]
 		public struct VW_RayCastHit
 		{
 			public int32 hit;
@@ -891,6 +909,9 @@ namespace jazzutils
 			public static extern void* VW_CloneWorld(void* source);
 
 			[CLink]
+			public static extern int32 VW_ComputeVoxelStatistics(void* world, VW_VoxelStatistics* statistics);
+
+			[CLink]
 			public static extern int32 VW_GetVoxel(
 				void* world,
 				int32 x,
@@ -1203,6 +1224,12 @@ namespace jazzutils
 			public VoxelWorld Clone()
 			{
 				return new VoxelWorld(VoxelNative.VW_CloneWorld(mHandle));
+			}
+
+			public bool ComputeStatistics(out VW_VoxelStatistics statistics)
+			{
+				statistics = default;
+				return VoxelNative.VW_ComputeVoxelStatistics(mHandle, &statistics) != 0;
 			}
 
 			public ~this()

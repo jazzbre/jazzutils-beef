@@ -227,6 +227,27 @@ VW_API int VW_ReduceMipCells(VW_World *source, VW_World *destination, const int3
 	VW_API void VW_ClearMeshBuildScratch(
 		VW_MeshBuildScratch* scratch);
 
+	/// Counts over every solid voxel, and sums over the collision voxels (solid with at least
+	/// one exposed face), with x, y and z the integer voxel coordinates.
+	typedef struct VW_VoxelStatistics
+	{
+		int64_t solidVoxelCount;
+		int64_t surfaceVoxelCount;
+		int64_t surfaceSumX;
+		int64_t surfaceSumY;
+		int64_t surfaceSumZ;
+		int64_t surfaceSumXX;
+		int64_t surfaceSumYY;
+		int64_t surfaceSumZZ;
+		int64_t surfaceSumXY;
+		int64_t surfaceSumXZ;
+		int64_t surfaceSumYZ;
+		int64_t voxelCountByMaterial[256];
+		int64_t surfaceVoxelCountByMaterial[256];
+	} VW_VoxelStatistics;
+
+	VW_API int VW_ComputeVoxelStatistics(const VW_World* world, VW_VoxelStatistics* statistics);
+
 	// Ray cast
 
 	typedef struct VW_RayCastHit
