@@ -91,6 +91,11 @@ namespace jazzutils
 			enkiAddTaskSetArgs(taskScheduler, job.handle, Internal.UnsafeCastToPtr(job), jobCount);
 		}
 
+		public static bool IsJobDone(Job job)
+		{
+			return (job == null) || (enkiIsTaskSetComplete(taskScheduler, (enkiTaskSet*)job.handle) != 0);
+		}
+
 		public static void WaitJobs(Job job)
 		{
 			enkiWaitForTaskSet(taskScheduler, job.handle);
