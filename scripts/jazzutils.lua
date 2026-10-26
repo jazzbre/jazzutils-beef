@@ -12,12 +12,14 @@ project "jazzutils"
    defines {
       "MCO_API",
       "MINIZ_NO_TIME",
+      "ZSTD_DISABLE_ASM",
    }
 
    includedirs {
       path.join(SOURCE_DIR, "miniz_export"),
       path.join(SOURCE_DIR, "sandbox/include"),
       path.join(SOURCE_DIR, "stb"),
+      path.join(SOURCE_DIR, "zstd/lib"),
    }
       
    files {
@@ -29,6 +31,9 @@ project "jazzutils"
       path.join(SOURCE_DIR, "miniz/miniz*.h"),
       path.join(SOURCE_DIR, "enkiTS/src/*.cpp"),
       path.join(SOURCE_DIR, "enkiTS/src/*.h"),
+      path.join(SOURCE_DIR, "zstd/lib/common/*.c"),
+      path.join(SOURCE_DIR, "zstd/lib/compress/*.c"),
+      path.join(SOURCE_DIR, "zstd/lib/decompress/*.c"),
    }
 
    configuration {}  

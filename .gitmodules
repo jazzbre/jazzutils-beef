@@ -15,3 +15,6 @@
 [submodule "submodules/sandbox"]
 	path = submodules/sandbox
 	url = https://github.com/melax/sandbox.git
+[submodule "submodules/zstd"]
+	path = submodules/zstd
+	url = https://github.com/facebook/zstd.git
