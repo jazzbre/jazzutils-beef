@@ -12,6 +12,11 @@
 #include <intrin.h>
 #endif
 
+#if defined(_M_X64) || defined(__x86_64__) || defined(_M_IX86) || defined(__i386__)
+#include <emmintrin.h>
+#define VW_HAS_SSE2 1
+#endif
+
 struct ChunkCoordInternal
 {
 	int x;
@@ -204,14 +209,6 @@ static uint8_t GetVoxelMaterialFast(
 	return w->voxels[(size_t)VoxelIndex(w, x, y, z)];
 }
 
-static uint8_t GetVoxelInternal(const VW_World* w, int x, int y, int z)
-{
-	if (!InBounds(w, x, y, z))
-		return 0;
-
-	return w->voxels[(size_t)VoxelIndex(w, x, y, z)];
-}
-
 
 static uint64_t MakeLowBitsMask(int bitCount)
 {
@@ -270,6 +267,79 @@ static int PopCount64(uint64_t value)
 #else
 	return __builtin_popcountll(value);
 #endif
+}
+
+// Bit x is set when row[x] is solid.
+static uint64_t SolidRowMask(const uint8_t* row, int count)
+{
+	uint64_t mask = 0;
+	int x = 0;
+#if VW_HAS_SSE2
+	const __m128i zero = _mm_setzero_si128();
+	for (; x + 16 <= count; x += 16)
+	{
+		const __m128i bytes = _mm_loadu_si128((const __m128i*)(row + x));
+		const uint32_t emptyBits = (uint32_t)_mm_movemask_epi8(_mm_cmpeq_epi8(bytes, zero));
+		mask |= (uint64_t)(~emptyBits & 0xFFFFu) << x;
+	}
+#endif
+	for (; x < count; x++)
+	{
+		if (row[x] != 0)
+			mask |= 1ull << x;
+	}
+	return mask;
+}
+
+// Bit j of rows[i] moves to bit i of rows[j].
+static void TransposeBits32(uint32_t* rows)
+{
+	uint32_t mask = 0x0000FFFFu;
+	for (int width = 16; width != 0; width >>= 1, mask ^= mask << width)
+	{
+		for (int k = 0; k < 32; k = (k + width + 1) & ~width)
+		{
+			const uint32_t swapped = ((rows[k] >> width) ^ rows[k + width]) & mask;
+			rows[k] ^= swapped << width;
+			rows[k + width] ^= swapped;
+		}
+	}
+}
+
+static void TransposeBits64(uint64_t* rows)
+{
+	uint64_t mask = 0x00000000FFFFFFFFull;
+	for (int width = 32; width != 0; width >>= 1, mask ^= mask << width)
+	{
+		for (int k = 0; k < 64; k = (k + width + 1) & ~width)
+		{
+			const uint64_t swapped = ((rows[k] >> width) ^ rows[k + width]) & mask;
+			rows[k] ^= swapped << width;
+			rows[k + width] ^= swapped;
+		}
+	}
+}
+
+// rows[i] bit j becomes transposed[j] bit i for the first chunkSize rows and bits.
+static void TransposeChunkSlice(const uint64_t* rows, int chunkSize, uint64_t* transposed)
+{
+	if (chunkSize <= 32)
+	{
+		uint32_t narrowRows[32] = {};
+		for (int i = 0; i < chunkSize; i++)
+			narrowRows[i] = (uint32_t)rows[i];
+		TransposeBits32(narrowRows);
+		for (int j = 0; j < chunkSize; j++)
+			transposed[j] = narrowRows[j];
+		return;
+	}
+
+	uint64_t wideRows[64] = {};
+	for (int i = 0; i < chunkSize; i++)
+		wideRows[i] = rows[i];
+	TransposeBits64(wideRows);
+	for (int j = 0; j < chunkSize; j++)
+		transposed[j] = wideRows[j];
 }
 
 static const int BrickSize = 4;
@@ -393,10 +463,14 @@ static void RebuildAllBrickMasks(VW_World* w)
 			const uint8_t* row = &w->voxels[(size_t)VoxelIndex(w, 0, y, z)];
 			uint64_t* brickRow = &w->solidBrickMasks[(size_t)BrickLinearIndex(w, 0, y / BrickSize, z / BrickSize)];
 			const int rowShift = BrickBitIndex(0, y % BrickSize, z % BrickSize);
-			for (int x = 0; x < w->sizeX; x++)
+			for (int x = 0; x < w->sizeX; x += 64)
 			{
-				if (row[x] != 0)
-					brickRow[x / BrickSize] |= 1ull << (rowShift + x % BrickSize);
+				const int count = std::min(64, w->sizeX - x);
+				const uint64_t rowMask = SolidRowMask(row + x, count);
+				if (rowMask == 0)
+					continue;
+				for (int brick = 0; brick * BrickSize < count; brick++)
+					brickRow[x / BrickSize + brick] |= ((rowMask >> (brick * BrickSize)) & 0xFull) << rowShift;
 			}
 		}
 	}
@@ -617,36 +691,59 @@ static void RebuildAllOccupancy(VW_World* w)
 	ClearAllOccupancy(w);
 
 	const int cs = w->chunkSize;
+	uint64_t xRows[64 * 64];
+	uint64_t sliceRows[64];
+	uint64_t transposedRows[64];
 
-	for (int z = 0; z < w->sizeZ; z++)
+	for (int chunkZ = 0; chunkZ < w->chunksZ; chunkZ++)
 	{
-		for (int y = 0; y < w->sizeY; y++)
+		for (int chunkY = 0; chunkY < w->chunksY; chunkY++)
 		{
-			for (int x = 0; x < w->sizeX; x++)
+			for (int chunkX = 0; chunkX < w->chunksX; chunkX++)
 			{
-				const uint8_t material = GetVoxelInternal(w, x, y, z);
+				VW_Chunk& chunk = w->chunks[(size_t)ChunkLinearIndex(w, chunkX, chunkY, chunkZ)];
+				const int baseX = chunkX * cs;
+				const int baseY = chunkY * cs;
+				const int baseZ = chunkZ * cs;
+				const int countX = std::min(cs, w->sizeX - baseX);
+				const int countY = std::min(cs, w->sizeY - baseY);
+				const int countZ = std::min(cs, w->sizeZ - baseZ);
 
-				if (material == 0)
+				int solidVoxelCount = 0;
+				for (int lz = 0; lz < cs; lz++)
+				{
+					for (int ly = 0; ly < cs; ly++)
+					{
+						uint64_t rowMask = 0;
+						if (lz < countZ && ly < countY)
+						{
+							rowMask = SolidRowMask(&w->voxels[(size_t)VoxelIndex(w, baseX, baseY + ly, baseZ + lz)], countX);
+							chunk.occupancyX[(size_t)(lz * cs + ly)] = rowMask;
+							solidVoxelCount += PopCount64(rowMask);
+						}
+						xRows[lz * 64 + ly] = rowMask;
+					}
+				}
+
+				chunk.solidVoxelCount = solidVoxelCount;
+				if (solidVoxelCount == 0)
 					continue;
 
-				const int chunkX = x / cs;
-				const int chunkY = y / cs;
-				const int chunkZ = z / cs;
+				for (int lz = 0; lz < countZ; lz++)
+				{
+					TransposeChunkSlice(&xRows[lz * 64], cs, transposedRows);
+					for (int lx = 0; lx < cs; lx++)
+						chunk.occupancyY[(size_t)(lz * cs + lx)] = transposedRows[lx];
+				}
 
-				VW_Chunk* chunk = GetChunk(w, chunkX, chunkY, chunkZ);
-
-				if (!chunk)
-					continue;
-
-				const int lx = x - chunkX * cs;
-				const int ly = y - chunkY * cs;
-				const int lz = z - chunkZ * cs;
-
-				chunk->occupancyX[(size_t)(lz * cs + ly)] |= 1ull << lx;
-				chunk->occupancyY[(size_t)(lz * cs + lx)] |= 1ull << ly;
-				chunk->occupancyZ[(size_t)(ly * cs + lx)] |= 1ull << lz;
-
-				chunk->solidVoxelCount++;
+				for (int ly = 0; ly < countY; ly++)
+				{
+					for (int lz = 0; lz < cs; lz++)
+						sliceRows[lz] = xRows[lz * 64 + ly];
+					TransposeChunkSlice(sliceRows, cs, transposedRows);
+					for (int lx = 0; lx < cs; lx++)
+						chunk.occupancyZ[(size_t)(ly * cs + lx)] = transposedRows[lx];
+				}
 			}
 		}
 	}
