@@ -839,6 +839,14 @@ namespace jazzutils
 				int32 sizeZ);
 
 			[CLink]
+			public static extern uint8* VW_GetVoxelData(
+				void* world);
+
+			[CLink]
+			public static extern int32 VW_RebuildFromVoxelData(
+				void* world);
+
+			[CLink]
 			public static extern int32 VW_GetSizeX(
 				void* world);
 
@@ -1321,6 +1329,14 @@ namespace jazzutils
 			public bool SetData(uint8* voxels, int32 sizeX, int32 sizeY, int32 sizeZ)
 			{
 				return VoxelNative.VW_SetData(mHandle, voxels, sizeX, sizeY, sizeZ) != 0;
+			}
+
+			/// Dense voxels, x fastest then y then z. Writes skip occupancy and dirty tracking until RebuildFromVoxelData.
+			public uint8* VoxelData => VoxelNative.VW_GetVoxelData(mHandle);
+
+			public bool RebuildFromVoxelData()
+			{
+				return VoxelNative.VW_RebuildFromVoxelData(mHandle) != 0;
 			}
 
 			public bool CopyVoxelData(Span<uint8> destination)

@@ -89,6 +89,13 @@ VW_API int VW_ReduceMipCells(VW_World *source, VW_World *destination, const int3
 		int sizeY,
 		int sizeZ);
 
+	// Writes through this pointer skip occupancy and dirty tracking; call VW_RebuildFromVoxelData after them.
+	VW_API uint8_t* VW_GetVoxelData(
+		VW_World* world);
+
+	VW_API int VW_RebuildFromVoxelData(
+		VW_World* world);
+
 	VW_API int VW_GetSizeX(
 		VW_World* world);
 

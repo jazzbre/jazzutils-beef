@@ -3599,6 +3599,24 @@ extern "C"
 		return 1;
 	}
 
+	VW_API uint8_t* VW_GetVoxelData(
+		VW_World* world)
+	{
+		return world ? world->voxels.data() : nullptr;
+	}
+
+	VW_API int VW_RebuildFromVoxelData(
+		VW_World* world)
+	{
+		if (!world)
+			return 0;
+
+		RebuildAllOccupancy(world);
+		world->dirtyChunkIndices.clear();
+		std::fill(world->dirtyFlags.begin(), world->dirtyFlags.end(), uint8_t(0));
+		return 1;
+	}
+
 	VW_API int VW_GetSizeX(
 		VW_World* world)
 	{
